@@ -173,7 +173,7 @@ const s = StyleSheet.create({
   header:       { backgroundColor: '#2C3E50', paddingVertical: 16, paddingHorizontal: 20, gap: 2 },
   headerTitle:  { fontSize: 20, fontWeight: 'bold', color: 'white' },
   headerSub:    { fontSize: 12, color: 'rgba(255,255,255,0.65)' },
-  scroll:       { padding: 16, gap: 12, paddingBottom: 40 },
+  scroll:       { padding: 16, gap: 12, paddingBottom: 120 },
   sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#2C3E50', marginTop: 4 },
   sectionDesc:  { fontSize: 12, color: '#888', marginTop: -6, marginBottom: 4 },
 

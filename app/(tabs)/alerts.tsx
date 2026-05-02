@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -14,9 +15,18 @@ import {
 } from 'react-native';
 import { DEFAULT_SIGNAL_CONFIG, SignalConfig } from '@/lib/signals';
 
-const STORAGE_KEY_SIGNALS   = '@signal_config_v1';
+const STORAGE_KEY_PROFILES  = '@signal_profiles_v2';
+const STORAGE_KEY_ACTIVE    = '@active_profile_id_v1';
+const STORAGE_KEY_SIGNALS   = '@signal_config_v1'; // 舊格式，首次遷移用
 const STORAGE_KEY_WATCHLIST = '@watchlist_v1';
 const STORAGE_KEY_PORTFOLIO = '@portfolio_v1';
+
+interface SignalProfile {
+  id: string;
+  name: string;
+  ticker: string;
+  config: SignalConfig;
+}
 
 const SIGNAL_META: Record<keyof SignalConfig, { name: string; desc: string }> = {
   kdGoldenCross:   { name: 'KD 黃金交叉',      desc: 'K 線從低檔上穿 D 線，底部反轉強訊號' },
@@ -37,19 +47,83 @@ const SIGNAL_PARAMS: Record<keyof SignalConfig, { label: string; key: string }[]
 };
 
 export default function AlertsScreen() {
-  const [config,   setConfig]   = useState<SignalConfig>(DEFAULT_SIGNAL_CONFIG);
-  const [syncing,  setSyncing]  = useState(false);
-  const [lastSync, setLastSync] = useState<string | null>(null);
+  const [profiles,     setProfiles]     = useState<SignalProfile[]>([]);
+  const [activeId,     setActiveId]     = useState('');
+  const [showPicker,   setShowPicker]   = useState(false);
+  const [showNewForm,  setShowNewForm]  = useState(false);
+  const [newName,      setNewName]      = useState('');
+  const [newTicker,    setNewTicker]    = useState('');
+  const [syncing,      setSyncing]      = useState(false);
+  const [lastSync,     setLastSync]     = useState<string | null>(null);
 
-  useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY_SIGNALS).then(raw => {
-      if (raw) try { setConfig(JSON.parse(raw)); } catch {}
-    });
-  }, []);
+  const activeProfile = profiles.find(p => p.id === activeId) ?? profiles[0];
+  const config = activeProfile?.config ?? DEFAULT_SIGNAL_CONFIG;
+
+  useEffect(() => { loadProfiles(); }, []);
+
+  const loadProfiles = async () => {
+    const [raw, aid, legacyRaw] = await Promise.all([
+      AsyncStorage.getItem(STORAGE_KEY_PROFILES),
+      AsyncStorage.getItem(STORAGE_KEY_ACTIVE),
+      AsyncStorage.getItem(STORAGE_KEY_SIGNALS),
+    ]);
+    if (raw) {
+      const loaded: SignalProfile[] = JSON.parse(raw);
+      setProfiles(loaded);
+      const validId = aid && loaded.find(p => p.id === aid) ? aid : loaded[0]?.id ?? '';
+      setActiveId(validId);
+    } else {
+      const defaultConfig = legacyRaw ? JSON.parse(legacyRaw) : DEFAULT_SIGNAL_CONFIG;
+      const first: SignalProfile = { id: Date.now().toString(), name: '預設設定檔', ticker: '', config: defaultConfig };
+      setProfiles([first]);
+      setActiveId(first.id);
+      await AsyncStorage.setItem(STORAGE_KEY_PROFILES, JSON.stringify([first]));
+      await AsyncStorage.setItem(STORAGE_KEY_ACTIVE, first.id);
+    }
+  };
+
+  const persistProfiles = async (next: SignalProfile[], nextId?: string) => {
+    setProfiles(next);
+    await AsyncStorage.setItem(STORAGE_KEY_PROFILES, JSON.stringify(next));
+    if (nextId !== undefined) {
+      setActiveId(nextId);
+      await AsyncStorage.setItem(STORAGE_KEY_ACTIVE, nextId);
+    }
+  };
 
   const saveConfig = async (next: SignalConfig) => {
-    setConfig(next);
-    await AsyncStorage.setItem(STORAGE_KEY_SIGNALS, JSON.stringify(next));
+    await persistProfiles(profiles.map(p => p.id === activeId ? { ...p, config: next } : p));
+  };
+
+  const switchProfile = async (id: string) => {
+    setActiveId(id);
+    await AsyncStorage.setItem(STORAGE_KEY_ACTIVE, id);
+    setShowPicker(false);
+  };
+
+  const createProfile = async () => {
+    if (!newName.trim()) { Alert.alert('請輸入設定檔名稱'); return; }
+    const profile: SignalProfile = {
+      id: Date.now().toString(),
+      name: newName.trim(),
+      ticker: newTicker.trim().toUpperCase(),
+      config: { ...DEFAULT_SIGNAL_CONFIG },
+    };
+    await persistProfiles([...profiles, profile], profile.id);
+    setNewName('');
+    setNewTicker('');
+    setShowNewForm(false);
+  };
+
+  const deleteProfile = () => {
+    if (profiles.length <= 1) { Alert.alert('無法刪除', '至少保留一個設定檔'); return; }
+    Alert.alert('刪除設定檔', `確定刪除「${activeProfile?.name}」？`, [
+      { text: '取消', style: 'cancel' },
+      { text: '刪除', style: 'destructive', onPress: async () => {
+        const next = profiles.filter(p => p.id !== activeId);
+        await persistProfiles(next, next[0].id);
+      }},
+    ]);
   };
 
   const toggleSignal = (key: keyof SignalConfig) =>
@@ -75,9 +149,7 @@ export default function AlertsScreen() {
         body: JSON.stringify({ watchlist, signalConfig: config, portfolio }),
       });
       if (res.ok) {
-        const now = new Date().toLocaleTimeString('zh-TW', {
-          hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei',
-        });
+        const now = new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' });
         setLastSync(now);
         Alert.alert('同步成功 ✓', `後台已更新\n自選股：${watchlist.length} 檔\n庫存：${portfolio.length} 檔\n開啟訊號：${Object.values(config).filter(v => v.enabled).length} 個`);
       } else {
@@ -97,8 +169,60 @@ export default function AlertsScreen() {
         <Text style={s.headerTitle}>推播通知設定</Text>
         <Text style={s.headerSub}>開啟 {enabledCount} 個訊號 · 通知透過 Telegram 傳送</Text>
       </View>
+
       <ScrollView contentContainerStyle={s.scroll}>
 
+        {/* ── 設定檔選擇器 ── */}
+        <View style={s.profileSection}>
+          <Text style={s.sectionTitle}>設定檔</Text>
+          <View style={s.profileRow}>
+            <TouchableOpacity style={s.profilePicker} onPress={() => setShowPicker(true)}>
+              <View style={{ flex: 1 }}>
+                <Text style={s.profileName} numberOfLines={1}>{activeProfile?.name ?? '—'}</Text>
+                {activeProfile?.ticker ? (
+                  <Text style={s.profileTicker}>標的：{activeProfile.ticker}</Text>
+                ) : null}
+              </View>
+              <Text style={s.pickerArrow}>▾</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.profileIconBtn} onPress={() => { setShowNewForm(v => !v); setNewName(''); setNewTicker(''); }}>
+              <Text style={s.profileIconBtnText}>{showNewForm ? '✕' : '＋'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[s.profileIconBtn, s.profileDeleteBtn]} onPress={deleteProfile}>
+              <Text style={[s.profileIconBtnText, { color: '#E74C3C' }]}>刪</Text>
+            </TouchableOpacity>
+          </View>
+
+          {showNewForm && (
+            <View style={s.newFormBox}>
+              <Text style={s.newFormLabel}>設定檔名稱</Text>
+              <TextInput
+                style={s.newFormInput}
+                placeholder="例：台積電短線"
+                placeholderTextColor="#bbb"
+                value={newName}
+                onChangeText={setNewName}
+                returnKeyType="next"
+              />
+              <Text style={s.newFormLabel}>標的代碼（選填）</Text>
+              <TextInput
+                style={s.newFormInput}
+                placeholder="例：2330"
+                placeholderTextColor="#bbb"
+                value={newTicker}
+                onChangeText={setNewTicker}
+                autoCapitalize="characters"
+                returnKeyType="done"
+                onSubmitEditing={createProfile}
+              />
+              <TouchableOpacity style={s.newFormConfirm} onPress={createProfile}>
+                <Text style={s.newFormConfirmText}>建立設定檔</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+
+        {/* ── 盯盤訊號 ── */}
         <Text style={s.sectionTitle}>盯盤訊號</Text>
         <Text style={s.sectionDesc}>台股交易時間（09:00–13:30）每 2 分鐘掃描一次自選股，觸發時推播到 Telegram</Text>
 
@@ -164,6 +288,28 @@ export default function AlertsScreen() {
         </View>
 
       </ScrollView>
+
+      {/* ── 設定檔選擇 Modal ── */}
+      <Modal visible={showPicker} transparent animationType="fade" onRequestClose={() => setShowPicker(false)}>
+        <TouchableOpacity style={s.modalOverlay} activeOpacity={1} onPress={() => setShowPicker(false)}>
+          <View style={s.pickerSheet}>
+            <Text style={s.pickerTitle}>選擇設定檔</Text>
+            {profiles.map(p => (
+              <TouchableOpacity
+                key={p.id}
+                style={[s.pickerItem, p.id === activeId && s.pickerItemActive]}
+                onPress={() => switchProfile(p.id)}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={[s.pickerItemName, p.id === activeId && s.pickerItemNameActive]}>{p.name}</Text>
+                  {p.ticker ? <Text style={s.pickerItemTicker}>{p.ticker}</Text> : null}
+                </View>
+                {p.id === activeId && <Text style={s.pickerCheck}>✓</Text>}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -177,6 +323,24 @@ const s = StyleSheet.create({
   sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#2C3E50', marginTop: 4 },
   sectionDesc:  { fontSize: 12, color: '#888', marginTop: -6, marginBottom: 4 },
 
+  // profile
+  profileSection:  { gap: 8 },
+  profileRow:      { flexDirection: 'row', gap: 8, alignItems: 'stretch' },
+  profilePicker:   { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: 'white', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
+  profileName:     { fontSize: 15, fontWeight: '600', color: '#2C3E50' },
+  profileTicker:   { fontSize: 11, color: '#888', marginTop: 2 },
+  pickerArrow:     { fontSize: 14, color: '#95A5A6', marginLeft: 8 },
+  profileIconBtn:  { backgroundColor: 'white', borderRadius: 12, width: 44, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
+  profileDeleteBtn: { borderWidth: 1, borderColor: '#FADBD8' },
+  profileIconBtnText: { fontSize: 16, fontWeight: 'bold', color: '#2C3E50' },
+
+  newFormBox:       { backgroundColor: 'white', borderRadius: 12, padding: 16, gap: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
+  newFormLabel:     { fontSize: 12, color: '#888', fontWeight: '600' },
+  newFormInput:     { backgroundColor: '#F5F5F5', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15, color: '#2C3E50' },
+  newFormConfirm:   { backgroundColor: '#2C3E50', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 4 },
+  newFormConfirmText: { color: 'white', fontWeight: 'bold', fontSize: 15 },
+
+  // signals
   signalCard:    { backgroundColor: 'white', borderRadius: 14, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
   signalCardOn:  { borderLeftWidth: 3, borderLeftColor: '#2C3E50' },
   signalHeader:  { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
@@ -200,4 +364,15 @@ const s = StyleSheet.create({
   infoTitle: { fontSize: 13, fontWeight: 'bold', color: '#2980B9', marginBottom: 4 },
   infoText:  { fontSize: 12, color: '#5D6D7E', lineHeight: 20 },
   infoNote:  { fontSize: 11, color: '#7FB3D3', marginTop: 4, fontStyle: 'italic' },
+
+  // modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },
+  pickerSheet:  { backgroundColor: 'white', borderRadius: 16, width: '100%', overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 12, elevation: 8 },
+  pickerTitle:  { fontSize: 14, fontWeight: 'bold', color: '#888', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },
+  pickerItem:   { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F8F8F8' },
+  pickerItemActive: { backgroundColor: '#F4F6F8' },
+  pickerItemName:   { fontSize: 16, color: '#444', fontWeight: '500' },
+  pickerItemNameActive: { color: '#2C3E50', fontWeight: '700' },
+  pickerItemTicker: { fontSize: 12, color: '#888', marginTop: 2 },
+  pickerCheck:      { fontSize: 16, color: '#2C3E50', fontWeight: 'bold' },
 });

@@ -118,8 +118,9 @@ export default async function handler(req: any, res: any) {
       const coolKey = `alert:${symbol}:${sig.type}`;
       if (await kv.get(coolKey)) continue;
 
+      const icon = sig.category === 'exit' ? '📉' : '📊';
       const lines = [
-        `📊 <b>${sig.label}</b>  ·  ${shortSym}${isHolding ? '  ⭐ 持有中' : ''}`,
+        `${icon} <b>${sig.label}</b>  ·  ${shortSym}${isHolding ? '  ⭐ 持有中' : ''}`,
         ``,
         `<b>${data.name}</b>  ${data.price.toLocaleString()}`,
         sig.detail,

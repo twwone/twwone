@@ -13,7 +13,12 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { DEFAULT_SIGNAL_CONFIG, SignalConfig } from '@/lib/signals';
+import {
+  DEFAULT_SIGNAL_CONFIG,
+  ENTRY_SIGNAL_KEYS,
+  EXIT_SIGNAL_KEYS,
+  SignalConfig,
+} from '@/lib/signals';
 
 const STORAGE_KEY_PROFILES  = '@signal_profiles_v2';
 const STORAGE_KEY_ACTIVE    = '@active_profile_id_v1';
@@ -29,32 +34,44 @@ interface SignalProfile {
 }
 
 const SIGNAL_META: Record<keyof SignalConfig, { name: string; desc: string }> = {
+  // 進場
   kdGoldenCross:   { name: 'KD 黃金交叉',      desc: 'K 線從低檔上穿 D 線，底部反轉強訊號' },
   rsiOversold:     { name: 'RSI 超賣反彈',      desc: 'RSI 從超賣區回升站上門檻，賣壓消化完畢' },
   maGoldenCross:   { name: 'MA 均線黃金交叉',   desc: '短均線上穿長均線，趨勢轉多頭排列' },
   bollingerBounce: { name: '布林下軌反彈',       desc: '股價跌破布林下軌後回彈入通道，均值回歸' },
   volumeBreak:     { name: '帶量突破',           desc: '成交量超過均量倍數並同時突破近期高點' },
   macdAboveZero:   { name: 'MACD 零軸上交叉',   desc: 'MACD 柱狀體在零軸以上由負翻正，多頭確認' },
+  // 離場
+  kdDeathCross:    { name: 'KD 死亡交叉',       desc: 'K 線從高檔下穿 D 線，頭部反轉弱訊號' },
+  rsiOverbought:   { name: 'RSI 超買回落',      desc: 'RSI 從超買區跌破門檻，追高風險升高' },
+  maDeathCross:    { name: 'MA 均線死亡交叉',   desc: '短均線下穿長均線，趨勢轉空頭排列' },
+  bollingerUpper:  { name: '布林上軌反壓',       desc: '股價觸碰布林上軌後回落通道，阻力強勁' },
+  macdBelowZero:   { name: 'MACD 零軸下交叉',   desc: 'MACD 柱狀體在零軸以下由正翻負，空頭確認' },
 };
 
 const SIGNAL_PARAMS: Record<keyof SignalConfig, { label: string; key: string }[]> = {
-  kdGoldenCross:   [{ label: '超賣門檻（K 值上限）', key: 'oversoldThreshold' }],
-  rsiOversold:     [{ label: 'RSI 超賣門檻',         key: 'threshold' }],
+  kdGoldenCross:   [{ label: '超賣門檻（K 值上限）',   key: 'oversoldThreshold' }],
+  rsiOversold:     [{ label: 'RSI 超賣門檻',           key: 'threshold' }],
   maGoldenCross:   [{ label: '短均線天數', key: 'shortPeriod' }, { label: '長均線天數', key: 'longPeriod' }],
   bollingerBounce: [{ label: '標準差倍數', key: 'stdDev' }],
   volumeBreak:     [{ label: '量能倍數',   key: 'volumeMultiplier' }, { label: '突破天數', key: 'breakDays' }],
   macdAboveZero:   [],
+  kdDeathCross:    [{ label: '超買門檻（K 值下限）',   key: 'overboughtThreshold' }],
+  rsiOverbought:   [{ label: 'RSI 超買門檻',           key: 'threshold' }],
+  maDeathCross:    [{ label: '短均線天數', key: 'shortPeriod' }, { label: '長均線天數', key: 'longPeriod' }],
+  bollingerUpper:  [{ label: '標準差倍數', key: 'stdDev' }],
+  macdBelowZero:   [],
 };
 
 export default function AlertsScreen() {
-  const [profiles,     setProfiles]     = useState<SignalProfile[]>([]);
-  const [activeId,     setActiveId]     = useState('');
-  const [showPicker,   setShowPicker]   = useState(false);
-  const [showNewForm,  setShowNewForm]  = useState(false);
-  const [newName,      setNewName]      = useState('');
-  const [newTicker,    setNewTicker]    = useState('');
-  const [syncing,      setSyncing]      = useState(false);
-  const [lastSync,     setLastSync]     = useState<string | null>(null);
+  const [profiles,    setProfiles]    = useState<SignalProfile[]>([]);
+  const [activeId,    setActiveId]    = useState('');
+  const [showPicker,  setShowPicker]  = useState(false);
+  const [showNewForm, setShowNewForm] = useState(false);
+  const [newName,     setNewName]     = useState('');
+  const [newTicker,   setNewTicker]   = useState('');
+  const [syncing,     setSyncing]     = useState(false);
+  const [lastSync,    setLastSync]    = useState<string | null>(null);
 
   const activeProfile = profiles.find(p => p.id === activeId) ?? profiles[0];
   const config = activeProfile?.config ?? DEFAULT_SIGNAL_CONFIG;
@@ -69,11 +86,17 @@ export default function AlertsScreen() {
     ]);
     if (raw) {
       const loaded: SignalProfile[] = JSON.parse(raw);
-      setProfiles(loaded);
-      const validId = aid && loaded.find(p => p.id === aid) ? aid : loaded[0]?.id ?? '';
+      // 若舊設定檔缺少新欄位，補上預設值
+      const migrated = loaded.map(p => ({
+        ...p,
+        config: { ...DEFAULT_SIGNAL_CONFIG, ...p.config },
+      }));
+      setProfiles(migrated);
+      const validId = aid && migrated.find(p => p.id === aid) ? aid : migrated[0]?.id ?? '';
       setActiveId(validId);
+      await AsyncStorage.setItem(STORAGE_KEY_PROFILES, JSON.stringify(migrated));
     } else {
-      const defaultConfig = legacyRaw ? JSON.parse(legacyRaw) : DEFAULT_SIGNAL_CONFIG;
+      const defaultConfig = legacyRaw ? { ...DEFAULT_SIGNAL_CONFIG, ...JSON.parse(legacyRaw) } : DEFAULT_SIGNAL_CONFIG;
       const first: SignalProfile = { id: Date.now().toString(), name: '預設設定檔', ticker: '', config: defaultConfig };
       setProfiles([first]);
       setActiveId(first.id);
@@ -151,7 +174,9 @@ export default function AlertsScreen() {
       if (res.ok) {
         const now = new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' });
         setLastSync(now);
-        Alert.alert('同步成功 ✓', `後台已更新\n自選股：${watchlist.length} 檔\n庫存：${portfolio.length} 檔\n開啟訊號：${Object.values(config).filter(v => v.enabled).length} 個`);
+        const entryOn = ENTRY_SIGNAL_KEYS.filter(k => config[k].enabled).length;
+        const exitOn  = EXIT_SIGNAL_KEYS.filter(k => config[k].enabled).length;
+        Alert.alert('同步成功 ✓', `後台已更新\n自選股：${watchlist.length} 檔\n庫存：${portfolio.length} 檔\n進場訊號：${entryOn} 個　離場訊號：${exitOn} 個`);
       } else {
         Alert.alert('同步失敗', '請確認 Vercel KV 已設定完成');
       }
@@ -161,13 +186,54 @@ export default function AlertsScreen() {
     setSyncing(false);
   };
 
-  const enabledCount = Object.values(config).filter(v => v.enabled).length;
+  const entryOn = ENTRY_SIGNAL_KEYS.filter(k => config[k].enabled).length;
+  const exitOn  = EXIT_SIGNAL_KEYS.filter(k => config[k].enabled).length;
+
+  const renderSignalCard = (key: keyof SignalConfig) => {
+    const { name, desc } = SIGNAL_META[key];
+    const enabled = config[key].enabled;
+    return (
+      <View key={key} style={[s.signalCard, enabled && s.signalCardOn]}>
+        <View style={s.signalHeader}>
+          <View style={{ flex: 1 }}>
+            <Text style={[s.signalName, enabled && s.signalNameOn]}>{name}</Text>
+            <Text style={s.signalDesc}>{desc}</Text>
+          </View>
+          <Switch
+            value={enabled}
+            onValueChange={() => toggleSignal(key)}
+            trackColor={{ false: '#DDD', true: '#2C3E50' }}
+            thumbColor="white"
+          />
+        </View>
+        {enabled && SIGNAL_PARAMS[key].length > 0 && (
+          <View style={s.paramSection}>
+            <View style={s.paramDivider} />
+            <View style={s.paramRow}>
+              {SIGNAL_PARAMS[key].map(({ label, key: pk }) => (
+                <View key={pk} style={s.paramItem}>
+                  <Text style={s.paramLabel}>{label}</Text>
+                  <TextInput
+                    style={s.paramInput}
+                    value={String((config[key] as Record<string, unknown>)[pk])}
+                    keyboardType="numeric"
+                    onChangeText={v => updateParam(key, pk, v)}
+                    selectTextOnFocus
+                  />
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+      </View>
+    );
+  };
 
   return (
     <SafeAreaView style={s.container}>
       <View style={s.header}>
         <Text style={s.headerTitle}>推播通知設定</Text>
-        <Text style={s.headerSub}>開啟 {enabledCount} 個訊號 · 通知透過 Telegram 傳送</Text>
+        <Text style={s.headerSub}>進場 {entryOn} 個 · 離場 {exitOn} 個 · 通知透過 Telegram 傳送</Text>
       </View>
 
       <ScrollView contentContainerStyle={s.scroll}>
@@ -222,49 +288,21 @@ export default function AlertsScreen() {
           )}
         </View>
 
-        {/* ── 盯盤訊號 ── */}
-        <Text style={s.sectionTitle}>盯盤訊號</Text>
-        <Text style={s.sectionDesc}>台股交易時間（09:00–13:30）每 2 分鐘掃描一次自選股，觸發時推播到 Telegram</Text>
+        {/* ── 進場訊號 ── */}
+        <View style={s.sectionHeader}>
+          <View style={[s.sectionDot, { backgroundColor: '#27AE60' }]} />
+          <Text style={s.sectionTitle}>進場訊號</Text>
+        </View>
+        <Text style={s.sectionDesc}>觸發時傳送 📊 訊息到 Telegram</Text>
+        {ENTRY_SIGNAL_KEYS.map(renderSignalCard)}
 
-        {(Object.keys(SIGNAL_META) as (keyof SignalConfig)[]).map(key => {
-          const { name, desc } = SIGNAL_META[key];
-          const enabled = config[key].enabled;
-          return (
-            <View key={key} style={[s.signalCard, enabled && s.signalCardOn]}>
-              <View style={s.signalHeader}>
-                <View style={{ flex: 1 }}>
-                  <Text style={[s.signalName, enabled && s.signalNameOn]}>{name}</Text>
-                  <Text style={s.signalDesc}>{desc}</Text>
-                </View>
-                <Switch
-                  value={enabled}
-                  onValueChange={() => toggleSignal(key)}
-                  trackColor={{ false: '#DDD', true: '#2C3E50' }}
-                  thumbColor="white"
-                />
-              </View>
-              {enabled && SIGNAL_PARAMS[key].length > 0 && (
-                <View style={s.paramSection}>
-                  <View style={s.paramDivider} />
-                  <View style={s.paramRow}>
-                    {SIGNAL_PARAMS[key].map(({ label, key: pk }) => (
-                      <View key={pk} style={s.paramItem}>
-                        <Text style={s.paramLabel}>{label}</Text>
-                        <TextInput
-                          style={s.paramInput}
-                          value={String((config[key] as Record<string, unknown>)[pk])}
-                          keyboardType="numeric"
-                          onChangeText={v => updateParam(key, pk, v)}
-                          selectTextOnFocus
-                        />
-                      </View>
-                    ))}
-                  </View>
-                </View>
-              )}
-            </View>
-          );
-        })}
+        {/* ── 離場訊號 ── */}
+        <View style={[s.sectionHeader, { marginTop: 8 }]}>
+          <View style={[s.sectionDot, { backgroundColor: '#E74C3C' }]} />
+          <Text style={s.sectionTitle}>離場訊號</Text>
+        </View>
+        <Text style={s.sectionDesc}>觸發時傳送 📉 訊息到 Telegram</Text>
+        {EXIT_SIGNAL_KEYS.map(renderSignalCard)}
 
         <TouchableOpacity
           style={[s.syncBtn, syncing && s.syncBtnDisabled]}
@@ -281,7 +319,7 @@ export default function AlertsScreen() {
         <View style={s.infoBox}>
           <Text style={s.infoTitle}>使用說明</Text>
           <Text style={s.infoText}>1. 在「自選股」頁加入你要盯的股票</Text>
-          <Text style={s.infoText}>2. 開啟想要的訊號並調整參數</Text>
+          <Text style={s.infoText}>2. 開啟想要的進場 / 離場訊號並調整參數</Text>
           <Text style={s.infoText}>3. 點「同步設定到後台」儲存</Text>
           <Text style={s.infoText}>4. 觸發時自動傳訊息到你的 Telegram</Text>
           <Text style={s.infoNote}>每個訊號觸發後有 4 小時冷卻，不重複推播</Text>
@@ -320,24 +358,27 @@ const s = StyleSheet.create({
   headerTitle:  { fontSize: 20, fontWeight: 'bold', color: 'white' },
   headerSub:    { fontSize: 12, color: 'rgba(255,255,255,0.65)' },
   scroll:       { padding: 16, gap: 12, paddingBottom: 120 },
-  sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#2C3E50', marginTop: 4 },
-  sectionDesc:  { fontSize: 12, color: '#888', marginTop: -6, marginBottom: 4 },
+
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
+  sectionDot:    { width: 8, height: 8, borderRadius: 4 },
+  sectionTitle:  { fontSize: 16, fontWeight: 'bold', color: '#2C3E50' },
+  sectionDesc:   { fontSize: 12, color: '#888', marginTop: -6, marginBottom: 4 },
 
   // profile
-  profileSection:  { gap: 8 },
-  profileRow:      { flexDirection: 'row', gap: 8, alignItems: 'stretch' },
-  profilePicker:   { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: 'white', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
-  profileName:     { fontSize: 15, fontWeight: '600', color: '#2C3E50' },
-  profileTicker:   { fontSize: 11, color: '#888', marginTop: 2 },
-  pickerArrow:     { fontSize: 14, color: '#95A5A6', marginLeft: 8 },
-  profileIconBtn:  { backgroundColor: 'white', borderRadius: 12, width: 44, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
-  profileDeleteBtn: { borderWidth: 1, borderColor: '#FADBD8' },
+  profileSection:     { gap: 8 },
+  profileRow:         { flexDirection: 'row', gap: 8, alignItems: 'stretch' },
+  profilePicker:      { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: 'white', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
+  profileName:        { fontSize: 15, fontWeight: '600', color: '#2C3E50' },
+  profileTicker:      { fontSize: 11, color: '#888', marginTop: 2 },
+  pickerArrow:        { fontSize: 14, color: '#95A5A6', marginLeft: 8 },
+  profileIconBtn:     { backgroundColor: 'white', borderRadius: 12, width: 44, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
+  profileDeleteBtn:   { borderWidth: 1, borderColor: '#FADBD8' },
   profileIconBtnText: { fontSize: 16, fontWeight: 'bold', color: '#2C3E50' },
 
-  newFormBox:       { backgroundColor: 'white', borderRadius: 12, padding: 16, gap: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
-  newFormLabel:     { fontSize: 12, color: '#888', fontWeight: '600' },
-  newFormInput:     { backgroundColor: '#F5F5F5', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15, color: '#2C3E50' },
-  newFormConfirm:   { backgroundColor: '#2C3E50', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 4 },
+  newFormBox:         { backgroundColor: 'white', borderRadius: 12, padding: 16, gap: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
+  newFormLabel:       { fontSize: 12, color: '#888', fontWeight: '600' },
+  newFormInput:       { backgroundColor: '#F5F5F5', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15, color: '#2C3E50' },
+  newFormConfirm:     { backgroundColor: '#2C3E50', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 4 },
   newFormConfirmText: { color: 'white', fontWeight: 'bold', fontSize: 15 },
 
   // signals
@@ -366,13 +407,13 @@ const s = StyleSheet.create({
   infoNote:  { fontSize: 11, color: '#7FB3D3', marginTop: 4, fontStyle: 'italic' },
 
   // modal
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },
-  pickerSheet:  { backgroundColor: 'white', borderRadius: 16, width: '100%', overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 12, elevation: 8 },
-  pickerTitle:  { fontSize: 14, fontWeight: 'bold', color: '#888', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },
-  pickerItem:   { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F8F8F8' },
-  pickerItemActive: { backgroundColor: '#F4F6F8' },
-  pickerItemName:   { fontSize: 16, color: '#444', fontWeight: '500' },
+  modalOverlay:         { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },
+  pickerSheet:          { backgroundColor: 'white', borderRadius: 16, width: '100%', overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 12, elevation: 8 },
+  pickerTitle:          { fontSize: 14, fontWeight: 'bold', color: '#888', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },
+  pickerItem:           { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F8F8F8' },
+  pickerItemActive:     { backgroundColor: '#F4F6F8' },
+  pickerItemName:       { fontSize: 16, color: '#444', fontWeight: '500' },
   pickerItemNameActive: { color: '#2C3E50', fontWeight: '700' },
-  pickerItemTicker: { fontSize: 12, color: '#888', marginTop: 2 },
-  pickerCheck:      { fontSize: 16, color: '#2C3E50', fontWeight: 'bold' },
+  pickerItemTicker:     { fontSize: 12, color: '#888', marginTop: 2 },
+  pickerCheck:          { fontSize: 16, color: '#2C3E50', fontWeight: 'bold' },
 });

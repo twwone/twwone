@@ -1,12 +1,26 @@
 // ── 型別 ──────────────────────────────────────────────────
 export interface SignalConfig {
+  // 進場
   kdGoldenCross:   { enabled: boolean; oversoldThreshold: number };
   rsiOversold:     { enabled: boolean; threshold: number };
   maGoldenCross:   { enabled: boolean; shortPeriod: number; longPeriod: number };
   bollingerBounce: { enabled: boolean; stdDev: number };
   volumeBreak:     { enabled: boolean; volumeMultiplier: number; breakDays: number };
   macdAboveZero:   { enabled: boolean };
+  // 離場
+  kdDeathCross:    { enabled: boolean; overboughtThreshold: number };
+  rsiOverbought:   { enabled: boolean; threshold: number };
+  maDeathCross:    { enabled: boolean; shortPeriod: number; longPeriod: number };
+  bollingerUpper:  { enabled: boolean; stdDev: number };
+  macdBelowZero:   { enabled: boolean };
 }
+
+export const ENTRY_SIGNAL_KEYS: (keyof SignalConfig)[] = [
+  'kdGoldenCross', 'rsiOversold', 'maGoldenCross', 'bollingerBounce', 'volumeBreak', 'macdAboveZero',
+];
+export const EXIT_SIGNAL_KEYS: (keyof SignalConfig)[] = [
+  'kdDeathCross', 'rsiOverbought', 'maDeathCross', 'bollingerUpper', 'macdBelowZero',
+];
 
 export const DEFAULT_SIGNAL_CONFIG: SignalConfig = {
   kdGoldenCross:   { enabled: true,  oversoldThreshold: 20 },
@@ -15,12 +29,18 @@ export const DEFAULT_SIGNAL_CONFIG: SignalConfig = {
   bollingerBounce: { enabled: false, stdDev: 2 },
   volumeBreak:     { enabled: false, volumeMultiplier: 1.5, breakDays: 5 },
   macdAboveZero:   { enabled: false },
+  kdDeathCross:    { enabled: false, overboughtThreshold: 80 },
+  rsiOverbought:   { enabled: false, threshold: 70 },
+  maDeathCross:    { enabled: false, shortPeriod: 5, longPeriod: 20 },
+  bollingerUpper:  { enabled: false, stdDev: 2 },
+  macdBelowZero:   { enabled: false },
 };
 
 export interface TriggeredSignal {
-  type:   string;
-  label:  string;
-  detail: string;
+  type:     string;
+  label:    string;
+  detail:   string;
+  category: 'entry' | 'exit';
 }
 
 // ── 基本指標 ──────────────────────────────────────────────
@@ -103,7 +123,9 @@ export function detectSignals(
   const out: TriggeredSignal[] = [];
   if (closes.length < 30) return out;
 
-  // 1. MA 黃金交叉（前一根死叉 → 今根黃叉）
+  // ── 進場訊號 ──────────────────────────────────────────
+
+  // 1. MA 黃金交叉
   if (config.maGoldenCross.enabled) {
     const { shortPeriod: sp, longPeriod: lp } = config.maGoldenCross;
     if (closes.length > lp + 1) {
@@ -111,67 +133,129 @@ export function detectSignals(
       const maSn = calcMA(closes, sp); const maLn = calcMA(closes, lp);
       const maSp = calcMA(prev, sp);   const maLp = calcMA(prev, lp);
       if (maSp <= maLp && maSn > maLn) {
-        out.push({ type: 'maGoldenCross', label: 'MA黃金交叉',
+        out.push({ category: 'entry', type: 'maGoldenCross', label: 'MA黃金交叉',
           detail: `MA${sp} ${maSn.toFixed(2)} 上穿 MA${lp} ${maLn.toFixed(2)}` });
       }
     }
   }
 
-  // 2. RSI 超賣反彈（由下方穿越門檻）
+  // 2. RSI 超賣反彈
   if (config.rsiOversold.enabled && closes.length > 16) {
     const rsiNow  = calcRSI(closes);
     const rsiPrev = calcRSI(closes.slice(0, -1));
     if (rsiPrev < config.rsiOversold.threshold && rsiNow >= config.rsiOversold.threshold) {
-      out.push({ type: 'rsiOversold', label: 'RSI超賣反彈',
+      out.push({ category: 'entry', type: 'rsiOversold', label: 'RSI超賣反彈',
         detail: `RSI ${rsiPrev.toFixed(1)} → ${rsiNow.toFixed(1)}，站回 ${config.rsiOversold.threshold}` });
     }
   }
 
-  // 3. KD 低檔黃金交叉（K 上穿 D 且在超賣附近）
+  // 3. KD 低檔黃金交叉
   if (config.kdGoldenCross.enabled && highs.length >= 12) {
     const { k, d } = calcKD(closes, highs, lows);
     if (k.length >= 2 && d.length >= 2) {
       const kN = k[k.length - 1]; const kP = k[k.length - 2];
       const dN = d[d.length - 1]; const dP = d[d.length - 2];
       if (kP <= dP && kN > dN && kN < config.kdGoldenCross.oversoldThreshold + 30) {
-        out.push({ type: 'kdGoldenCross', label: 'KD黃金交叉',
+        out.push({ category: 'entry', type: 'kdGoldenCross', label: 'KD黃金交叉',
           detail: `K ${kN.toFixed(1)} 上穿 D ${dN.toFixed(1)}（低檔黃金交叉）` });
       }
     }
   }
 
-  // 4. 布林下軌反彈（前收跌破下軌，今收回通道內）
+  // 4. 布林下軌反彈
   if (config.bollingerBounce.enabled && closes.length >= 22) {
     const bollN = calcBollinger(closes, 20, config.bollingerBounce.stdDev);
     const bollP = calcBollinger(closes.slice(0, -1), 20, config.bollingerBounce.stdDev);
     if (closes[closes.length - 2] < bollP.lower && closes[closes.length - 1] >= bollN.lower) {
-      out.push({ type: 'bollingerBounce', label: '布林下軌反彈',
+      out.push({ category: 'entry', type: 'bollingerBounce', label: '布林下軌反彈',
         detail: `從下軌 ${bollN.lower.toFixed(2)} 反彈回通道` });
     }
   }
 
-  // 5. 帶量突破（今日量 > N 日均量 × 倍數，且收盤突破近 N 日高點）
+  // 5. 帶量突破
   if (config.volumeBreak.enabled && volumes.length >= config.volumeBreak.breakDays + 1) {
     const { volumeMultiplier: vm, breakDays: bd } = config.volumeBreak;
-    const todayVol  = volumes[volumes.length - 1];
-    const prevVols  = volumes.slice(-bd - 1, -1);
-    const vma       = prevVols.reduce((a, b) => a + b, 0) / prevVols.length;
-    const prevHigh  = Math.max(...closes.slice(-bd - 1, -1));
+    const todayVol = volumes[volumes.length - 1];
+    const prevVols = volumes.slice(-bd - 1, -1);
+    const vma      = prevVols.reduce((a, b) => a + b, 0) / prevVols.length;
+    const prevHigh = Math.max(...closes.slice(-bd - 1, -1));
     if (todayVol > vma * vm && closes[closes.length - 1] > prevHigh) {
-      out.push({ type: 'volumeBreak', label: '帶量突破',
+      out.push({ category: 'entry', type: 'volumeBreak', label: '帶量突破',
         detail: `量 ${(todayVol / 1000).toFixed(0)}張 > 均量 ${(vma / 1000).toFixed(0)}張，突破${bd}日高` });
     }
   }
 
-  // 6. MACD 零軸上方黃金交叉（柱狀體由負轉正，且 MACD 線在零軸以上）
+  // 6. MACD 零軸上方黃金交叉
   if (config.macdAboveZero.enabled) {
     const { histogram, macd } = calcMACD(closes);
     if (histogram.length >= 2) {
       const hN = histogram[histogram.length - 1]; const hP = histogram[histogram.length - 2];
       const mN = macd[macd.length - 1];
       if (hP <= 0 && hN > 0 && mN > 0) {
-        out.push({ type: 'macdAboveZero', label: 'MACD零軸上交叉',
+        out.push({ category: 'entry', type: 'macdAboveZero', label: 'MACD零軸上交叉',
           detail: `MACD ${mN.toFixed(3)}，零軸以上由負翻正` });
+      }
+    }
+  }
+
+  // ── 離場訊號 ──────────────────────────────────────────
+
+  // 7. KD 高檔死亡交叉
+  if (config.kdDeathCross.enabled && highs.length >= 12) {
+    const { k, d } = calcKD(closes, highs, lows);
+    if (k.length >= 2 && d.length >= 2) {
+      const kN = k[k.length - 1]; const kP = k[k.length - 2];
+      const dN = d[d.length - 1]; const dP = d[d.length - 2];
+      if (kP >= dP && kN < dN && kN > config.kdDeathCross.overboughtThreshold - 30) {
+        out.push({ category: 'exit', type: 'kdDeathCross', label: 'KD死亡交叉',
+          detail: `K ${kN.toFixed(1)} 下穿 D ${dN.toFixed(1)}（高檔死亡交叉）` });
+      }
+    }
+  }
+
+  // 8. RSI 超買回落
+  if (config.rsiOverbought.enabled && closes.length > 16) {
+    const rsiNow  = calcRSI(closes);
+    const rsiPrev = calcRSI(closes.slice(0, -1));
+    if (rsiPrev > config.rsiOverbought.threshold && rsiNow <= config.rsiOverbought.threshold) {
+      out.push({ category: 'exit', type: 'rsiOverbought', label: 'RSI超買回落',
+        detail: `RSI ${rsiPrev.toFixed(1)} → ${rsiNow.toFixed(1)}，跌破 ${config.rsiOverbought.threshold}` });
+    }
+  }
+
+  // 9. MA 死亡交叉
+  if (config.maDeathCross.enabled) {
+    const { shortPeriod: sp, longPeriod: lp } = config.maDeathCross;
+    if (closes.length > lp + 1) {
+      const prev = closes.slice(0, -1);
+      const maSn = calcMA(closes, sp); const maLn = calcMA(closes, lp);
+      const maSp = calcMA(prev, sp);   const maLp = calcMA(prev, lp);
+      if (maSp >= maLp && maSn < maLn) {
+        out.push({ category: 'exit', type: 'maDeathCross', label: 'MA死亡交叉',
+          detail: `MA${sp} ${maSn.toFixed(2)} 下穿 MA${lp} ${maLn.toFixed(2)}` });
+      }
+    }
+  }
+
+  // 10. 布林上軌反壓
+  if (config.bollingerUpper.enabled && closes.length >= 22) {
+    const bollN = calcBollinger(closes, 20, config.bollingerUpper.stdDev);
+    const bollP = calcBollinger(closes.slice(0, -1), 20, config.bollingerUpper.stdDev);
+    if (closes[closes.length - 2] > bollP.upper && closes[closes.length - 1] <= bollN.upper) {
+      out.push({ category: 'exit', type: 'bollingerUpper', label: '布林上軌反壓',
+        detail: `從上軌 ${bollN.upper.toFixed(2)} 跌回通道` });
+    }
+  }
+
+  // 11. MACD 零軸下方死亡交叉
+  if (config.macdBelowZero.enabled) {
+    const { histogram, macd } = calcMACD(closes);
+    if (histogram.length >= 2) {
+      const hN = histogram[histogram.length - 1]; const hP = histogram[histogram.length - 2];
+      const mN = macd[macd.length - 1];
+      if (hP >= 0 && hN < 0 && mN < 0) {
+        out.push({ category: 'exit', type: 'macdBelowZero', label: 'MACD零軸下交叉',
+          detail: `MACD ${mN.toFixed(3)}，零軸以下由正翻負` });
       }
     }
   }

@@ -2,223 +2,242 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
-import Svg, { G, Line, Polyline, Rect, Text as SvgText } from 'react-native-svg';
+import Svg, {
+  Defs,
+  Line,
+  LinearGradient as SvgGrad,
+  Path,
+  Rect,
+  Stop,
+  Text as SvgText,
+} from 'react-native-svg';
 
-const YF_API  = '/api/stock';
-const CHART_H    = 260;
-const Y_AXIS_W   = 56;
-const PAD_TOP    = 14;
-const PAD_BOT    = 26;
-const PAD_L      = 8;
-const SLOT_W     = 11;
-const BODY_RATIO = 0.60;
+const YF_API = '/api/stock';
 
-type Period = '日' | '週' | '月' | '年';
+const PERIODS = [
+  { label: '1天',     interval: '5m',  range: '1d'  },
+  { label: '1週',     interval: '60m', range: '5d'  },
+  { label: '1個月',   interval: '1d',  range: '1mo' },
+  { label: '3個月',   interval: '1d',  range: '3mo' },
+  { label: '6個月',   interval: '1d',  range: '6mo' },
+  { label: '年初至今', interval: '1d',  range: 'ytd' },
+] as const;
 
-const PERIOD_PARAMS: Record<Period, { interval: string; range: string }> = {
-  '日': { interval: '1d',  range: '3mo' },
-  '週': { interval: '1wk', range: '1y'  },
-  '月': { interval: '1mo', range: '3y'  },
-  '年': { interval: '1mo', range: '5y'  },
-};
+const CHART_H = 200;
+const VOL_H   = 36;
+const PAD_TOP = 10;
+const PAD_BOT = 22;
+const Y_W     = 52;
 
-interface Candle {
-  timestamp: number;
-  open: number; high: number; low: number; close: number;
+interface Pt { timestamp: number; close: number; volume: number }
+interface Meta {
+  open: number; hi: number; lo: number; vol: number;
+  mktCap?: number; pe?: number; wk52Hi?: number; wk52Lo?: number;
 }
 
-function calcMA(vals: number[], period: number): (number | null)[] {
-  return vals.map((_, i) => {
-    if (i < period - 1) return null;
-    const s = vals.slice(i - period + 1, i + 1);
-    return s.reduce((a, b) => a + b, 0) / period;
-  });
-}
+const fmtP  = (p: number) => p >= 1000 ? p.toFixed(1) : p.toFixed(2);
+const fmtV  = (v: number) => v >= 1e8 ? `${(v/1e8).toFixed(1)}億` : v >= 1e4 ? `${Math.round(v/1e4)}萬` : v.toLocaleString();
+const fmtMC = (v: number) => v >= 1e12 ? `${(v/1e12).toFixed(2)}兆` : v >= 1e8 ? `${Math.round(v/1e8)}億` : v.toLocaleString();
 
-function evenLabels(min: number, max: number, n = 5): number[] {
-  return Array.from({ length: n }, (_, i) => min + (max - min) * (i / (n - 1)));
-}
-
-function fmtPrice(p: number): string {
-  if (p >= 10000) return p.toFixed(0);
-  if (p >= 1000)  return p.toFixed(0);
-  if (p >= 100)   return p.toFixed(1);
-  return p.toFixed(2);
-}
-
-async function fetchCandles(symbol: string, interval: string, range: string): Promise<Candle[]> {
+async function load(symbol: string, interval: string, range: string): Promise<{ pts: Pt[]; meta: Meta }> {
   const res  = await fetch(`${YF_API}?symbol=${encodeURIComponent(symbol)}&interval=${interval}&range=${range}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error();
   const json = await res.json();
   const r    = json.chart.result[0];
-  const ts: number[] = r.timestamp ?? [];
-  const { open, high, low, close } = r.indicators.quote[0];
+  const m    = r.meta;
+  const ts   = r.timestamp ?? [];
+  const q    = r.indicators.quote[0];
 
-  const out: Candle[] = [];
+  const pts: Pt[] = [];
   for (let i = 0; i < ts.length; i++) {
-    if (open[i] == null || close[i] == null) continue;
-    out.push({
-      timestamp: ts[i],
-      open:  open[i],
-      high:  high[i]  ?? Math.max(open[i], close[i]),
-      low:   low[i]   ?? Math.min(open[i], close[i]),
-      close: close[i],
-    });
+    const c = q.close?.[i];
+    if (c == null || isNaN(c)) continue;
+    pts.push({ timestamp: ts[i], close: c, volume: q.volume?.[i] ?? 0 });
   }
-  return out;
+
+  return {
+    pts,
+    meta: {
+      open:   m.regularMarketOpen    ?? 0,
+      hi:     m.regularMarketDayHigh ?? 0,
+      lo:     m.regularMarketDayLow  ?? 0,
+      vol:    m.regularMarketVolume  ?? 0,
+      mktCap: m.marketCap,
+      pe:     m.trailingPE,
+      wk52Hi: m.fiftyTwoWeekHigh,
+      wk52Lo: m.fiftyTwoWeekLow,
+    },
+  };
 }
 
 export default function KLineChart({ symbol }: { symbol: string }) {
-  const [period,  setPeriod]  = useState<Period>('日');
-  const [candles, setCandles] = useState<Candle[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error,   setError]   = useState<string | null>(null);
+  const W = useWindowDimensions().width;
+
+  const [pi,  setPi]  = useState(1);
+  const [pts, setPts] = useState<Pt[]>([]);
+  const [meta, setMeta] = useState<Meta | null>(null);
+  const [busy, setBusy] = useState(true);
+  const [err,  setErr]  = useState<string | null>(null);
 
   useEffect(() => {
-    setLoading(true); setError(null); setCandles([]);
-    const { interval, range } = PERIOD_PARAMS[period];
-    fetchCandles(symbol, interval, range)
-      .then(data => { setCandles(data);           setLoading(false); })
-      .catch(()  => { setError('K 線資料載入失敗'); setLoading(false); });
-  }, [symbol, period]);
+    setBusy(true); setErr(null);
+    const { interval, range } = PERIODS[pi];
+    load(symbol, interval, range)
+      .then(d => { setPts(d.pts); setMeta(d.meta); setBusy(false); })
+      .catch(() => { setErr('資料載入失敗'); setBusy(false); });
+  }, [symbol, pi]);
+
+  const isIntra = pi <= 1;
 
   const chart = useMemo(() => {
-    if (candles.length === 0) return null;
+    if (pts.length < 2) return null;
 
-    const innerH  = CHART_H - PAD_TOP - PAD_BOT;
-    const svgW    = PAD_L + candles.length * SLOT_W + Y_AXIS_W;
-    const hiMax   = Math.max(...candles.map(c => c.high));
-    const loMin   = Math.min(...candles.map(c => c.low));
-    const pad     = (hiMax - loMin) * 0.07;
-    const vMax    = hiMax + pad;
-    const vMin    = loMin - pad;
-    const vRange  = vMax - vMin || 1;
+    const innerW = W - Y_W;
+    const innerH = CHART_H - PAD_TOP - PAD_BOT;
+    const closes = pts.map(p => p.close);
+    const vMax   = Math.max(...closes);
+    const vMin   = Math.min(...closes);
+    const vRange = vMax - vMin || 1;
 
-    const toY = (p: number) => PAD_TOP + innerH * (1 - (p - vMin) / vRange);
-    const cx  = (i: number) => PAD_L + i * SLOT_W + SLOT_W / 2;
+    const toY = (v: number) => PAD_TOP + innerH * (1 - (v - vMin) / vRange);
+    const toX = (i: number) => (i / (pts.length - 1)) * innerW;
 
-    const closes   = candles.map(c => c.close);
-    const ma5vals  = calcMA(closes, 5);
-    const ma20vals = calcMA(closes, 20);
-    const toPoints = (vals: (number | null)[]): string =>
-      vals.map((v, i) => v != null ? `${cx(i)},${toY(v)}` : null)
-          .filter(Boolean).join(' ');
+    const isUp  = closes[closes.length - 1] >= closes[0];
+    const color = isUp ? '#FF3B30' : '#30D158';
 
-    const xLabels: { i: number; label: string }[] = [];
-    candles.forEach((c, i) => {
-      const d    = new Date(c.timestamp * 1000);
-      const prev = i > 0 ? new Date(candles[i - 1].timestamp * 1000) : null;
-      if (i === 0 || (prev && prev.getMonth() !== d.getMonth()) || i === candles.length - 1) {
-        xLabels.push({ i, label: `${d.getMonth() + 1}/${d.getDate()}` });
-      }
-    });
+    const line = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${toX(i).toFixed(1)},${toY(p.close).toFixed(1)}`).join(' ');
+    const base = CHART_H - PAD_BOT;
+    const area = `${line} L${toX(pts.length - 1).toFixed(1)},${base} L0,${base} Z`;
 
-    return { svgW, toY, cx, yLabels: evenLabels(vMin, vMax, 5), ma5pts: toPoints(ma5vals), ma20pts: toPoints(ma20vals), xLabels };
-  }, [candles]);
+    const yLabels = Array.from({ length: 5 }, (_, i) => vMin + (vRange / 4) * i);
+
+    const step = Math.max(1, Math.floor(pts.length / 5));
+    const xLabels: { x: number; t: string }[] = [];
+    for (let i = 0; i < pts.length; i += step) {
+      const d = new Date(pts[i].timestamp * 1000);
+      xLabels.push({
+        x: toX(i),
+        t: isIntra
+          ? d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' })
+          : `${d.getMonth() + 1}/${d.getDate()}`,
+      });
+    }
+
+    const vols   = pts.map(p => p.volume);
+    const volMax = Math.max(...vols) || 1;
+    const barW   = Math.max(innerW / pts.length - 0.5, 0.5);
+
+    return { color, line, area, yLabels, xLabels, toY, toX, vols, volMax, barW };
+  }, [pts, W, isIntra]);
 
   return (
-    <View style={s.wrap}>
-
-      {/* 標題列 + 週期選擇 */}
-      <View style={s.hdr}>
-        <View style={s.legend}>
-          <View style={[s.dot, { backgroundColor: '#FF8C00' }]} />
-          <Text style={s.lgTxt}>MA5</Text>
-          <View style={[s.dot, { backgroundColor: '#3498DB' }]} />
-          <Text style={s.lgTxt}>MA20</Text>
-          <Text style={s.lgTip}>　紅漲/綠跌</Text>
-        </View>
-        <View style={s.periodBar}>
-          {(['日', '週', '月', '年'] as Period[]).map(p => (
-            <Pressable
-              key={p}
-              style={[s.periodBtn, period === p && s.periodActive]}
-              onPress={() => setPeriod(p)}
-            >
-              <Text style={[s.periodTxt, period === p && s.periodActiveTxt]}>{p}</Text>
-            </Pressable>
-          ))}
-        </View>
+    <View>
+      {/* 週期選擇 */}
+      <View style={s.pBar}>
+        {PERIODS.map((p, i) => (
+          <Pressable key={p.label} style={[s.pBtn, i === pi && s.pAct]} onPress={() => setPi(i)}>
+            <Text style={[s.pTxt, i === pi && s.pActTxt]}>{p.label}</Text>
+          </Pressable>
+        ))}
       </View>
 
-      {loading ? (
+      {busy ? (
         <View style={s.center}>
-          <ActivityIndicator color="#F39C12" size="small" />
+          <ActivityIndicator color="#FF3B30" />
           <Text style={s.hint}>載入中...</Text>
         </View>
-      ) : error ? (
-        <View style={s.center}><Text style={s.err}>{error}</Text></View>
+      ) : err ? (
+        <View style={s.center}><Text style={s.errTxt}>{err}</Text></View>
       ) : chart ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 2 }}>
-          <Svg width={chart.svgW} height={CHART_H}>
+        <>
+          <Svg width={W} height={CHART_H + VOL_H}>
+            <Defs>
+              <SvgGrad id="grad" x1="0" y1="0" x2="0" y2="1">
+                <Stop offset="0%"   stopColor={chart.color} stopOpacity={0.4} />
+                <Stop offset="100%" stopColor={chart.color} stopOpacity={0}   />
+              </SvgGrad>
+            </Defs>
 
-            {chart.yLabels.map((p, idx) => {
-              const y = chart.toY(p);
-              return (
-                <G key={idx}>
-                  <Line x1={PAD_L} y1={y} x2={chart.svgW - Y_AXIS_W} y2={y}
-                    stroke="#1E3A5F" strokeWidth={0.5} strokeDasharray="3,4" />
-                  <SvgText x={chart.svgW - Y_AXIS_W + 5} y={y + 4}
-                    fontSize={9} fill="#4A7FA5" textAnchor="start">{fmtPrice(p)}</SvgText>
-                </G>
-              );
-            })}
-
-            <Polyline points={chart.ma20pts} fill="none" stroke="#3498DB" strokeWidth={1.2} strokeLinecap="round" />
-            <Polyline points={chart.ma5pts}  fill="none" stroke="#FF8C00" strokeWidth={1.2} strokeLinecap="round" />
-
-            {candles.map((c, i) => {
-              const isUp    = c.close >= c.open;
-              const color   = isUp ? '#E74C3C' : '#27AE60';
-              const x       = chart.cx(i);
-              const bodyTop = Math.min(chart.toY(c.open), chart.toY(c.close));
-              const bodyH   = Math.max(Math.abs(chart.toY(c.close) - chart.toY(c.open)), 1.5);
-              const bodyW   = SLOT_W * BODY_RATIO;
-              return (
-                <G key={c.timestamp}>
-                  <Line x1={x} y1={chart.toY(c.high)} x2={x} y2={chart.toY(c.low)} stroke={color} strokeWidth={0.9} />
-                  <Rect x={x - bodyW / 2} y={bodyTop} width={bodyW} height={bodyH} fill={color} stroke={color} strokeWidth={0.3} />
-                </G>
-              );
-            })}
-
-            {chart.xLabels.map(({ i, label }) => (
-              <SvgText key={i} x={chart.cx(i)} y={CHART_H - 6}
-                fontSize={9} fill="#4A7FA5" textAnchor="middle">{label}</SvgText>
+            {/* 格線 */}
+            {chart.yLabels.map((v, i) => (
+              <Line key={i} x1={0} y1={chart.toY(v)} x2={W - Y_W} y2={chart.toY(v)} stroke="#2A2A2A" strokeWidth={0.5} />
             ))}
 
+            {/* 面積漸層 + 折線 */}
+            <Path d={chart.area} fill="url(#grad)" />
+            <Path d={chart.line} fill="none" stroke={chart.color} strokeWidth={1.8} strokeLinejoin="round" strokeLinecap="round" />
+
+            {/* Y 軸標籤 */}
+            {chart.yLabels.map((v, i) => (
+              <SvgText key={i} x={W - Y_W + 6} y={chart.toY(v) + 4} fontSize={10} fill="#666" textAnchor="start">{fmtP(v)}</SvgText>
+            ))}
+
+            {/* X 軸標籤 */}
+            {chart.xLabels.map(({ x, t }, i) => (
+              <SvgText key={i} x={x} y={CHART_H - 2} fontSize={9} fill="#555" textAnchor="middle">{t}</SvgText>
+            ))}
+
+            {/* 成交量柱 */}
+            {chart.vols.map((v, i) => {
+              const h = Math.max((v / chart.volMax) * (VOL_H - 2), 1);
+              return (
+                <Rect key={i}
+                  x={chart.toX(i) - chart.barW / 2}
+                  y={CHART_H + VOL_H - h}
+                  width={chart.barW} height={h}
+                  fill={chart.color} opacity={0.35}
+                />
+              );
+            })}
           </Svg>
-        </ScrollView>
+
+          {/* 資訊格 */}
+          {meta && (
+            <View style={s.grid}>
+              <IR l="開盤價"  v={fmtP(meta.open)} />
+              <IR l="最高價"  v={fmtP(meta.hi)} />
+              <IR l="最低價"  v={fmtP(meta.lo)} />
+              <IR l="成交量"  v={fmtV(meta.vol)} />
+              {meta.pe     ? <IR l="本益比"    v={meta.pe.toFixed(2)} />  : null}
+              {meta.mktCap ? <IR l="市值"      v={fmtMC(meta.mktCap)} /> : null}
+              {meta.wk52Hi ? <IR l="52週最高"  v={fmtP(meta.wk52Hi)} />  : null}
+              {meta.wk52Lo ? <IR l="52週最低"  v={fmtP(meta.wk52Lo)} />  : null}
+            </View>
+          )}
+        </>
       ) : null}
     </View>
   );
 }
 
+function IR({ l, v }: { l: string; v: string }) {
+  return (
+    <View style={s.iRow}>
+      <Text style={s.iL}>{l}</Text>
+      <Text style={s.iV}>{v}</Text>
+    </View>
+  );
+}
+
 const s = StyleSheet.create({
-  wrap:   { backgroundColor: '#162535', borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: '#1E3A5F' },
-  center: { height: 110, justifyContent: 'center', alignItems: 'center', gap: 8 },
+  center: { height: 160, justifyContent: 'center', alignItems: 'center', gap: 8 },
 
-  hdr: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 14, paddingTop: 12, paddingBottom: 10,
-    borderBottomWidth: 1, borderBottomColor: '#1E3A5F',
-  },
-  legend:   { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  dot:      { width: 7, height: 7, borderRadius: 3.5 },
-  lgTxt:    { fontSize: 10, color: '#7A9BB5', marginRight: 2 },
-  lgTip:    { fontSize: 10, color: '#3A5A78' },
+  pBar:    { flexDirection: 'row', justifyContent: 'space-around', paddingHorizontal: 8, paddingVertical: 12, borderBottomWidth: 0.5, borderBottomColor: '#2A2A2A' },
+  pBtn:    { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 14 },
+  pAct:    { backgroundColor: '#3A3A3A' },
+  pTxt:    { fontSize: 12, color: '#666', fontWeight: '500' },
+  pActTxt: { color: '#FFF', fontWeight: '700' },
 
-  periodBar:       { flexDirection: 'row', gap: 4 },
-  periodBtn:       { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, backgroundColor: '#1E3A5F' },
-  periodActive:    { backgroundColor: '#E74C3C' },
-  periodTxt:       { fontSize: 11, color: '#7A9BB5', fontWeight: '600' },
-  periodActiveTxt: { color: '#FFF' },
+  grid:  { marginHorizontal: 16, marginTop: 12, borderRadius: 12, backgroundColor: '#1C1C1E', overflow: 'hidden', marginBottom: 32 },
+  iRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 11, borderBottomWidth: 0.5, borderBottomColor: '#2C2C2E' },
+  iL:    { fontSize: 13, color: '#888' },
+  iV:    { fontSize: 13, color: '#FFF', fontWeight: '500' },
 
-  hint: { fontSize: 12, color: '#4A7FA5' },
-  err:  { fontSize: 13, color: '#FF6B6B' },
+  hint:   { fontSize: 12, color: '#555' },
+  errTxt: { fontSize: 13, color: '#FF6B6B' },
 });

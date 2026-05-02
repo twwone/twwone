@@ -359,27 +359,23 @@ export default function App() {
       {/* K 線 Modal */}
       <Modal visible={!!selectedStock} animationType="slide" onRequestClose={() => setSelectedStock(null)}>
         <SafeAreaView style={s.modalWrap}>
-          <View style={s.modalHeader}>
-            <View>
-              <Text style={s.modalSymbol}>{selectedStock?.symbol}</Text>
-              <Text style={s.modalName}>{selectedStock?.name}</Text>
+          <ScrollView>
+            <View style={s.modalHeader}>
+              <TouchableOpacity style={s.modalClose} onPress={() => setSelectedStock(null)}>
+                <Text style={s.modalCloseTxt}>✕</Text>
+              </TouchableOpacity>
             </View>
-            <TouchableOpacity style={s.modalClose} onPress={() => setSelectedStock(null)}>
-              <Text style={s.modalCloseTxt}>✕</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={s.modalPrice}>
-            <Text style={[s.modalPriceNum, { color: tColor(selectedStock?.change ?? 0) }]}>
-              {selectedStock?.price.toLocaleString()}
-            </Text>
-            <Text style={[s.modalPriceChg, { color: tColor(selectedStock?.change ?? 0) }]}>
-              {arrow(selectedStock?.change ?? 0)} {Math.abs(selectedStock?.change ?? 0).toFixed(2)}{'  '}
-              ({(selectedStock?.changePct ?? 0) >= 0 ? '+' : ''}{(selectedStock?.changePct ?? 0).toFixed(2)}%)
-            </Text>
-          </View>
-          <View style={{ padding: 16 }}>
+            <View style={s.modalMeta}>
+              <Text style={s.modalName}>{selectedStock?.name}</Text>
+              <Text style={s.modalSymbol}>{selectedStock?.symbol}</Text>
+              <Text style={s.modalPriceNum}>{selectedStock?.price.toLocaleString()}</Text>
+              <Text style={[s.modalPriceChg, { color: tColor(selectedStock?.change ?? 0) }]}>
+                {arrow(selectedStock?.change ?? 0)} {Math.abs(selectedStock?.change ?? 0).toFixed(2)}{'  '}
+                ({(selectedStock?.changePct ?? 0) >= 0 ? '+' : ''}{(selectedStock?.changePct ?? 0).toFixed(2)}%)
+              </Text>
+            </View>
             {selectedStock && <KLineChart symbol={selectedStock.symbol} />}
-          </View>
+          </ScrollView>
         </SafeAreaView>
       </Modal>
 
@@ -662,15 +658,15 @@ const s = StyleSheet.create({
   deleteBtn:     { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FDECEA', justifyContent: 'center', alignItems: 'center' },
   deleteBtnText: { fontSize: 18, color: '#E74C3C', lineHeight: 22 },
 
-  modalWrap:     { flex: 1, backgroundColor: '#F0F2F5' },
-  modalHeader:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#2C3E50', paddingHorizontal: 20, paddingVertical: 16 },
-  modalSymbol:   { fontSize: 20, fontWeight: 'bold', color: 'white' },
-  modalName:     { fontSize: 13, color: '#aaa', marginTop: 2 },
-  modalClose:    { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
-  modalCloseTxt: { fontSize: 16, color: 'white', fontWeight: 'bold' },
-  modalPrice:    { backgroundColor: 'white', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#eee', flexDirection: 'row', alignItems: 'baseline', gap: 12 },
-  modalPriceNum: { fontSize: 36, fontWeight: 'bold' },
-  modalPriceChg: { fontSize: 15, fontWeight: '600' },
+  modalWrap:     { flex: 1, backgroundColor: '#000' },
+  modalHeader:   { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 4 },
+  modalClose:    { width: 32, height: 32, borderRadius: 16, backgroundColor: '#2C2C2E', justifyContent: 'center', alignItems: 'center' },
+  modalCloseTxt: { fontSize: 15, color: '#FFF', fontWeight: 'bold' },
+  modalMeta:     { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 16 },
+  modalName:     { fontSize: 28, fontWeight: 'bold', color: '#FFF' },
+  modalSymbol:   { fontSize: 14, color: '#888', marginTop: 2, marginBottom: 8 },
+  modalPriceNum: { fontSize: 36, fontWeight: 'bold', color: '#FFF' },
+  modalPriceChg: { fontSize: 15, fontWeight: '500', marginTop: 4 },
 
   addBtn:     { margin: 16, marginBottom: 8, backgroundColor: '#2C3E50', paddingVertical: 13, borderRadius: 12, alignItems: 'center' },
   addBtnText: { color: 'white', fontSize: 15, fontWeight: 'bold' },

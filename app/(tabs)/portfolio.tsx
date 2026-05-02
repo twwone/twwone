@@ -23,6 +23,7 @@ export interface Holding {
   symbol:    string;
   name:      string;
   lots:      number;
+  unit:      '張' | '股';
   costPrice: number;
   buyDate:   string;
 }
@@ -80,6 +81,7 @@ export default function PortfolioScreen() {
 
   const [fSymbol,  setFSymbol]  = useState('');
   const [fLots,    setFLots]    = useState('');
+  const [fUnit,    setFUnit]    = useState<'張' | '股'>('張');
   const [fCost,    setFCost]    = useState('');
   const [fBuyDate, setFBuyDate] = useState('');
 
@@ -117,7 +119,7 @@ export default function PortfolioScreen() {
     }
     const h: Holding = {
       id: Date.now().toString(), symbol,
-      name: info.name, lots, costPrice: cost, buyDate: fBuyDate.trim(),
+      name: info.name, lots, unit: fUnit, costPrice: cost, buyDate: fBuyDate.trim(),
     };
     const next = [...holdings, h];
     setHoldings(next);
@@ -125,7 +127,7 @@ export default function PortfolioScreen() {
     await saveHoldings(next);
     setAdding(false);
     setShowModal(false);
-    setFSymbol(''); setFLots(''); setFCost(''); setFBuyDate('');
+    setFSymbol(''); setFLots(''); setFUnit('張'); setFCost(''); setFBuyDate('');
   };
 
   const removeHolding = (id: string) => {
@@ -142,13 +144,14 @@ export default function PortfolioScreen() {
   // 加入即時價格
   const enriched: HoldingWithPrice[] = holdings.map(h => {
     const cur    = priceMap[h.symbol] ?? h.costPrice;
-    const pnl    = (cur - h.costPrice) * h.lots * 1000;
+    const mul    = (h.unit ?? '張') === '張' ? 1000 : 1;
+    const pnl    = (cur - h.costPrice) * h.lots * mul;
     const pnlPct = ((cur - h.costPrice) / h.costPrice) * 100;
     return { ...h, currentPrice: cur, pnl, pnlPct, days: holdingDays(h.buyDate) };
   });
 
-  const totalCost  = enriched.reduce((a, h) => a + h.costPrice    * h.lots * 1000, 0);
-  const totalValue = enriched.reduce((a, h) => a + h.currentPrice * h.lots * 1000, 0);
+  const totalCost  = enriched.reduce((a, h) => { const mul = (h.unit ?? '張') === '張' ? 1000 : 1; return a + h.costPrice    * h.lots * mul; }, 0);
+  const totalValue = enriched.reduce((a, h) => { const mul = (h.unit ?? '張') === '張' ? 1000 : 1; return a + h.currentPrice * h.lots * mul; }, 0);
   const totalPnl   = totalValue - totalCost;
   const totalPct   = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
 
@@ -200,7 +203,7 @@ export default function PortfolioScreen() {
                   <View style={{ flex: 1 }}>
                     <Text style={s.cardName}>{h.name}</Text>
                     <Text style={s.cardMeta}>
-                      {h.symbol.replace('.TW', '')}　·　{h.lots} 張
+                      {h.symbol.replace('.TW', '')}　·　{h.lots} {h.unit ?? '張'}
                       {h.days > 0 ? `　·　持有 ${h.days} 天` : ''}
                     </Text>
                   </View>
@@ -243,9 +246,18 @@ export default function PortfolioScreen() {
               placeholderTextColor="#bbb" value={fSymbol} onChangeText={setFSymbol}
               autoCapitalize="characters" />
 
-            <Text style={s.label}>張數（1張 = 1000股）</Text>
-            <TextInput style={s.input} placeholder="2" placeholderTextColor="#bbb"
-              value={fLots} onChangeText={setFLots} keyboardType="numeric" />
+            <View style={s.labelRow}>
+              <Text style={s.label}>數量</Text>
+              <View style={s.unitToggle}>
+                {(['張', '股'] as const).map(u => (
+                  <TouchableOpacity key={u} style={[s.unitBtn, fUnit === u && s.unitBtnActive]} onPress={() => setFUnit(u)}>
+                    <Text style={[s.unitBtnText, fUnit === u && s.unitBtnTextActive]}>{u}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+            <TextInput style={s.input} placeholder={fUnit === '張' ? '2' : '100'}
+              placeholderTextColor="#bbb" value={fLots} onChangeText={setFLots} keyboardType="numeric" />
 
             <Text style={s.label}>成本價（每股，元）</Text>
             <TextInput style={s.input} placeholder="985.00" placeholderTextColor="#bbb"
@@ -318,6 +330,12 @@ const s = StyleSheet.create({
   modalTitle: { fontSize: 18, fontWeight: 'bold', color: '#2C3E50' },
   modalClose: { fontSize: 18, color: '#aaa', fontWeight: 'bold' },
   label:      { fontSize: 13, color: '#555', fontWeight: '600', marginTop: 4 },
+  labelRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 },
+  unitToggle: { flexDirection: 'row', borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: '#2C3E50' },
+  unitBtn:    { paddingHorizontal: 14, paddingVertical: 4, backgroundColor: 'white' },
+  unitBtnActive: { backgroundColor: '#2C3E50' },
+  unitBtnText:   { fontSize: 13, color: '#2C3E50', fontWeight: '600' },
+  unitBtnTextActive: { color: 'white' },
   input:      { backgroundColor: '#F5F5F5', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, color: '#333', borderWidth: 1, borderColor: '#EEE' },
   confirmBtn:    { backgroundColor: '#2C3E50', borderRadius: 12, paddingVertical: 15, alignItems: 'center', marginTop: 8 },
   confirmBtnOff: { backgroundColor: '#95A5A6' },

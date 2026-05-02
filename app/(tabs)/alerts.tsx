@@ -16,6 +16,7 @@ import { DEFAULT_SIGNAL_CONFIG, SignalConfig } from '@/lib/signals';
 
 const STORAGE_KEY_SIGNALS   = '@signal_config_v1';
 const STORAGE_KEY_WATCHLIST = '@watchlist_v1';
+const STORAGE_KEY_PORTFOLIO = '@portfolio_v1';
 
 const SIGNAL_META: Record<keyof SignalConfig, { name: string; desc: string }> = {
   kdGoldenCross:   { name: 'KD 黃金交叉',      desc: 'K 線從低檔上穿 D 線，底部反轉強訊號' },
@@ -62,19 +63,23 @@ export default function AlertsScreen() {
   const syncToBackend = async () => {
     setSyncing(true);
     try {
-      const raw       = await AsyncStorage.getItem(STORAGE_KEY_WATCHLIST);
-      const watchlist = raw ? JSON.parse(raw) : [];
+      const [wRaw, pRaw] = await Promise.all([
+        AsyncStorage.getItem(STORAGE_KEY_WATCHLIST),
+        AsyncStorage.getItem(STORAGE_KEY_PORTFOLIO),
+      ]);
+      const watchlist = wRaw ? JSON.parse(wRaw) : [];
+      const portfolio = pRaw ? JSON.parse(pRaw) : [];
       const res = await fetch('/api/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ watchlist, signalConfig: config }),
+        body: JSON.stringify({ watchlist, signalConfig: config, portfolio }),
       });
       if (res.ok) {
         const now = new Date().toLocaleTimeString('zh-TW', {
           hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei',
         });
         setLastSync(now);
-        Alert.alert('同步成功 ✓', `後台已更新\n自選股：${watchlist.length} 檔\n開啟訊號：${Object.values(config).filter(v => v.enabled).length} 個`);
+        Alert.alert('同步成功 ✓', `後台已更新\n自選股：${watchlist.length} 檔\n庫存：${portfolio.length} 檔\n開啟訊號：${Object.values(config).filter(v => v.enabled).length} 個`);
       } else {
         Alert.alert('同步失敗', '請確認 Vercel KV 已設定完成');
       }

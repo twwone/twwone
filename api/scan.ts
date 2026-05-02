@@ -54,9 +54,17 @@ async function sendTelegram(text: string): Promise<void> {
   });
 }
 
+interface PortfolioItem {
+  symbol:    string;
+  name:      string;
+  lots:      number;
+  costPrice: number;
+}
+
 interface Settings {
   watchlist:    string[];
   signalConfig: SignalConfig;
+  portfolio:    PortfolioItem[];
 }
 
 export default async function handler(req: any, res: any) {
@@ -79,37 +87,56 @@ export default async function handler(req: any, res: any) {
     return res.status(500).json({ error: 'Vercel KV not configured' });
   }
 
-  if (!settings?.watchlist?.length) {
-    return res.json({ skipped: 'no watchlist configured' });
+  // 合併自選股 + 庫存股（去重）
+  const portfolioMap = new Map<string, PortfolioItem>(
+    (settings?.portfolio ?? []).map(p => [p.symbol, p]),
+  );
+  const allSymbols = Array.from(new Set([
+    ...(settings?.watchlist ?? []),
+    ...portfolioMap.keys(),
+  ]));
+
+  if (!allSymbols.length) {
+    return res.json({ skipped: 'no symbols configured' });
   }
 
   const triggered: string[] = [];
 
-  for (const symbol of settings.watchlist) {
+  for (const symbol of allSymbols) {
     const data = await fetchStockData(symbol);
     if (!data) continue;
 
     const signals = detectSignals(
-      data.closes, data.volumes, data.highs, data.lows, settings.signalConfig,
+      data.closes, data.volumes, data.highs, data.lows, settings?.signalConfig ?? {} as SignalConfig,
     );
+
+    const holding     = portfolioMap.get(symbol);
+    const isHolding   = !!holding;
+    const shortSym    = symbol.replace('.TW', '').replace('.TWO', '');
 
     for (const sig of signals) {
       const coolKey = `alert:${symbol}:${sig.type}`;
       if (await kv.get(coolKey)) continue;
 
-      const shortSym = symbol.replace('.TW', '').replace('.TWO', '');
-      const msg = [
-        `📊 <b>${sig.label}</b>  ·  ${shortSym}`,
+      const lines = [
+        `📊 <b>${sig.label}</b>  ·  ${shortSym}${isHolding ? '  ⭐ 持有中' : ''}`,
         ``,
-        `<b>${data.name}</b>  $${data.price.toLocaleString()}`,
-        `${sig.detail}`,
-      ].join('\n');
+        `<b>${data.name}</b>  ${data.price.toLocaleString()}`,
+        sig.detail,
+      ];
 
-      await sendTelegram(msg);
+      if (isHolding && holding) {
+        const pnl    = (data.price - holding.costPrice) * holding.lots * 1000;
+        const pnlPct = ((data.price - holding.costPrice) / holding.costPrice) * 100;
+        const sign   = pnl >= 0 ? '+' : '';
+        lines.push(`成本 ${holding.costPrice.toLocaleString()} → ${sign}${Math.round(pnl).toLocaleString()} 元 (${sign}${pnlPct.toFixed(2)}%)`);
+      }
+
+      await sendTelegram(lines.join('\n'));
       await kv.set(coolKey, 1, { ex: 4 * 60 * 60 });
       triggered.push(`${symbol}:${sig.type}`);
     }
   }
 
-  res.json({ ok: true, scanned: settings.watchlist.length, triggered });
+  res.json({ ok: true, scanned: allSymbols.length, triggered });
 }

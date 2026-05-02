@@ -17,6 +17,7 @@ interface StockData {
   volumes: number[];
   highs:   number[];
   lows:    number[];
+  price:   number;
 }
 
 async function fetchStockData(symbol: string): Promise<StockData | null> {
@@ -33,6 +34,7 @@ async function fetchStockData(symbol: string): Promise<StockData | null> {
       arr.filter((v): v is number => v !== null && !isNaN(v));
     return {
       name:    result.meta.shortName ?? symbol,
+      price:   result.meta.regularMarketPrice ?? 0,
       closes:  clean(q.close  as (number | null)[]),
       volumes: clean(q.volume as (number | null)[]),
       highs:   clean(q.high   as (number | null)[]),
@@ -41,28 +43,28 @@ async function fetchStockData(symbol: string): Promise<StockData | null> {
   } catch { return null; }
 }
 
-async function sendPush(token: string, title: string, body: string): Promise<void> {
-  await fetch('https://exp.host/--/api/v2/push/send', {
+async function sendTelegram(text: string): Promise<void> {
+  const token  = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) return;
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ to: token, title, body, sound: 'default', priority: 'high' }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
   });
 }
 
-interface UserRecord {
-  pushToken:    string;
+interface Settings {
   watchlist:    string[];
   signalConfig: SignalConfig;
 }
 
 export default async function handler(req: any, res: any) {
-  // 驗證：Vercel Cron 自動附帶 Authorization header（設定 CRON_SECRET 後生效）
-  // 外部 cron 服務（如 cron-job.org）可用 ?key=YOUR_SECRET 觸發
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret) {
-    const authHeader = req.headers['authorization'];
-    const queryKey   = req.query?.key;
-    const valid      = authHeader === `Bearer ${cronSecret}` || queryKey === cronSecret;
+    const valid =
+      req.headers['authorization'] === `Bearer ${cronSecret}` ||
+      req.query?.key === cronSecret;
     if (!valid) return res.status(401).json({ error: 'unauthorized' });
   }
 
@@ -70,39 +72,44 @@ export default async function handler(req: any, res: any) {
     return res.json({ skipped: 'market closed', ts: new Date().toISOString() });
   }
 
-  let tokens: string[] = [];
+  let settings: Settings | null = null;
   try {
-    tokens = (await kv.smembers('push_tokens')) as string[];
+    settings = await kv.get<Settings>('settings');
   } catch {
     return res.status(500).json({ error: 'Vercel KV not configured' });
   }
 
+  if (!settings?.watchlist?.length) {
+    return res.json({ skipped: 'no watchlist configured' });
+  }
+
   const triggered: string[] = [];
 
-  for (const token of tokens) {
-    const user = await kv.get<UserRecord>(`user:${token}`);
-    if (!user?.watchlist?.length) continue;
+  for (const symbol of settings.watchlist) {
+    const data = await fetchStockData(symbol);
+    if (!data) continue;
 
-    for (const symbol of user.watchlist) {
-      const data = await fetchStockData(symbol);
-      if (!data) continue;
+    const signals = detectSignals(
+      data.closes, data.volumes, data.highs, data.lows, settings.signalConfig,
+    );
 
-      const signals = detectSignals(
-        data.closes, data.volumes, data.highs, data.lows, user.signalConfig,
-      );
+    for (const sig of signals) {
+      const coolKey = `alert:${symbol}:${sig.type}`;
+      if (await kv.get(coolKey)) continue;
 
-      for (const sig of signals) {
-        // 4 小時冷卻，同一支股票同一訊號不重複推播
-        const coolKey = `alert:${token}:${symbol}:${sig.type}`;
-        if (await kv.get(coolKey)) continue;
+      const shortSym = symbol.replace('.TW', '').replace('.TWO', '');
+      const msg = [
+        `📊 <b>${sig.label}</b>  ·  ${shortSym}`,
+        ``,
+        `<b>${data.name}</b>  $${data.price.toLocaleString()}`,
+        `${sig.detail}`,
+      ].join('\n');
 
-        const shortSym = symbol.replace('.TW', '').replace('.TWO', '');
-        await sendPush(token, `${sig.label}  ${shortSym}`, `${data.name} — ${sig.detail}`);
-        await kv.set(coolKey, 1, { ex: 4 * 60 * 60 });
-        triggered.push(`${symbol}:${sig.type}`);
-      }
+      await sendTelegram(msg);
+      await kv.set(coolKey, 1, { ex: 4 * 60 * 60 });
+      triggered.push(`${symbol}:${sig.type}`);
     }
   }
 
-  res.json({ ok: true, scanned: tokens.length, triggered });
+  res.json({ ok: true, scanned: settings.watchlist.length, triggered });
 }

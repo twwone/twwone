@@ -261,7 +261,7 @@ export default function PortfolioScreen() {
 
             <Text style={s.label}>成本價（每股，元）</Text>
             <TextInput style={s.input} placeholder="985.00" placeholderTextColor="#bbb"
-              value={fCost} onChangeText={setFCost} keyboardType="numeric" />
+              value={fCost} onChangeText={setFCost} keyboardType="decimal-pad" />
 
             <Text style={s.label}>買進日期（選填）</Text>
             <TextInput style={s.input} placeholder="2026-04-15" placeholderTextColor="#bbb"

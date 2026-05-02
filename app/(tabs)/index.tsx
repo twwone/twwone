@@ -395,7 +395,19 @@ export default function App() {
         <View style={[s.statusDot, { backgroundColor: marketOpen ? '#2ECC71' : '#95A5A6' }]} />
         <Text style={s.statusText}>{marketOpen ? '交易中' : '已收盤'}</Text>
         {marketOpen && <Text style={s.statusSub}>　每 60 秒自動更新</Text>}
-        {lastUpdated && <Text style={s.statusUpdated}>　更新：{formatTime(lastUpdated)}</Text>}
+        {lastUpdated && <Text style={s.statusUpdated}>　{formatTime(lastUpdated)}</Text>}
+        <TouchableOpacity
+          style={s.refreshBtn}
+          onPress={() => {
+            if (tab === 'market')    { setMarketRefresh(true);  loadMarket(); }
+            if (tab === 'watchlist') { setWatchRefresh(true);   loadWatchlist(); }
+          }}
+        >
+          {(marketRefresh || watchRefresh)
+            ? <ActivityIndicator size="small" color="#2C3E50" />
+            : <Text style={s.refreshIcon}>↻</Text>
+          }
+        </TouchableOpacity>
       </View>
 
       {/* ─── 市場 Tab ──────────────────────────────────── */}
@@ -408,7 +420,7 @@ export default function App() {
               {marketStats && <StatsRow stats={marketStats} />}
               <Text style={s.sectionTitle}>重點個股</Text>
               {marketStocks.map(st => <StockCard key={st.symbol} stock={st} onPress={() => setSelectedStock(st)} />)}
-              <Text style={s.footer}>資料來源：Yahoo Finance / TWSE　下拉重新整理</Text>
+              <Text style={s.footer}>資料來源：Yahoo Finance / TWSE</Text>
             </ScrollView>
       )}
 
@@ -635,7 +647,9 @@ const s = StyleSheet.create({
   statusDot:    { width: 7, height: 7, borderRadius: 4, marginRight: 5 },
   statusText:   { fontSize: 12, color: '#555', fontWeight: '600' },
   statusSub:    { fontSize: 11, color: '#aaa' },
-  statusUpdated:{ fontSize: 11, color: '#aaa', marginLeft: 'auto' },
+  statusUpdated:{ fontSize: 11, color: '#aaa', marginLeft: 'auto', marginRight: 8 },
+  refreshBtn:   { width: 30, height: 30, borderRadius: 15, backgroundColor: '#EFEFEF', justifyContent: 'center', alignItems: 'center' },
+  refreshIcon:  { fontSize: 16, color: '#2C3E50', fontWeight: 'bold' },
 
   indexCard:   { backgroundColor: 'white', borderRadius: 16, padding: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 8, elevation: 3 },
   indexLabel:  { fontSize: 13, color: '#999', marginBottom: 4 },

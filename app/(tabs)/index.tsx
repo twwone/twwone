@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Modal,
   Pressable,
   RefreshControl,
   SafeAreaView,
@@ -13,6 +14,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import KLineChart from '@/components/KLineChart';
 
 // ── 型別定義 ──────────────────────────────────────────────
 type Tab = 'market' | 'watchlist' | 'search';
@@ -260,6 +262,7 @@ export default function App() {
 
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [marketOpen,  setMarketOpen]  = useState(isMarketOpen());
+  const [selectedStock, setSelectedStock] = useState<StockItem | null>(null);
 
   const watchSymbolsRef = useRef<string[]>([]);
   useEffect(() => { watchSymbolsRef.current = watchSymbols; }, [watchSymbols]);
@@ -352,6 +355,34 @@ export default function App() {
   // ── 畫面 ─────────────────────────────────────────────
   return (
     <SafeAreaView style={s.container}>
+
+      {/* K 線 Modal */}
+      <Modal visible={!!selectedStock} animationType="slide" onRequestClose={() => setSelectedStock(null)}>
+        <SafeAreaView style={s.modalWrap}>
+          <View style={s.modalHeader}>
+            <View>
+              <Text style={s.modalSymbol}>{selectedStock?.symbol}</Text>
+              <Text style={s.modalName}>{selectedStock?.name}</Text>
+            </View>
+            <TouchableOpacity style={s.modalClose} onPress={() => setSelectedStock(null)}>
+              <Text style={s.modalCloseTxt}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={s.modalPrice}>
+            <Text style={[s.modalPriceNum, { color: tColor(selectedStock?.change ?? 0) }]}>
+              {selectedStock?.price.toLocaleString()}
+            </Text>
+            <Text style={[s.modalPriceChg, { color: tColor(selectedStock?.change ?? 0) }]}>
+              {arrow(selectedStock?.change ?? 0)} {Math.abs(selectedStock?.change ?? 0).toFixed(2)}{'  '}
+              ({(selectedStock?.changePct ?? 0) >= 0 ? '+' : ''}{(selectedStock?.changePct ?? 0).toFixed(2)}%)
+            </Text>
+          </View>
+          <View style={{ padding: 16 }}>
+            {selectedStock && <KLineChart symbol={selectedStock.symbol} />}
+          </View>
+        </SafeAreaView>
+      </Modal>
+
       <View style={s.header}><Text style={s.headerTitle}>我的股票分析器</Text></View>
 
       <View style={s.tabBar}>
@@ -380,7 +411,7 @@ export default function App() {
               {indexData   && <IndexCard data={indexData} />}
               {marketStats && <StatsRow stats={marketStats} />}
               <Text style={s.sectionTitle}>重點個股</Text>
-              {marketStocks.map(st => <StockCard key={st.symbol} stock={st} />)}
+              {marketStocks.map(st => <StockCard key={st.symbol} stock={st} onPress={() => setSelectedStock(st)} />)}
               <Text style={s.footer}>資料來源：Yahoo Finance / TWSE　下拉重新整理</Text>
             </ScrollView>
       )}
@@ -398,7 +429,7 @@ export default function App() {
               : <FlatList data={watchStocks} keyExtractor={i => i.symbol}
                   contentContainerStyle={{ padding: 16, gap: 10 }}
                   refreshControl={<RefreshControl refreshing={watchRefresh} tintColor="#2C3E50" onRefresh={() => { setWatchRefresh(true); loadWatchlist(); }} />}
-                  renderItem={({ item }) => <StockCard stock={item} onDelete={() => removeStock(item.symbol)} />}
+                  renderItem={({ item }) => <StockCard stock={item} onPress={() => setSelectedStock(item)} onDelete={() => removeStock(item.symbol)} />}
                 />
           }
         </View>
@@ -428,7 +459,7 @@ export default function App() {
 
           {searchResult && (
             <>
-              <StockCard stock={searchResult} />
+              <StockCard stock={searchResult} onPress={() => setSelectedStock(searchResult)} />
 
               <TouchableOpacity
                 style={[s.watchlistBtn, watchSymbols.includes(searchResult.symbol) && s.watchlistBtnDone]}
@@ -564,9 +595,9 @@ function StatCard({ value, label, accent }: { value: string; label: string; acce
   );
 }
 
-function StockCard({ stock, onDelete }: { stock: StockItem; onDelete?: () => void }) {
+function StockCard({ stock, onPress, onDelete }: { stock: StockItem; onPress?: () => void; onDelete?: () => void }) {
   return (
-    <View style={s.stockCard}>
+    <Pressable style={s.stockCard} onPress={onPress} android_ripple={{ color: '#eee' }}>
       <View style={{ flex: 1 }}>
         <Text style={s.stockSymbol}>{stock.symbol}</Text>
         <Text style={s.stockName}>{stock.name}</Text>
@@ -579,11 +610,11 @@ function StockCard({ stock, onDelete }: { stock: StockItem; onDelete?: () => voi
         </Text>
       </View>
       {onDelete && (
-        <TouchableOpacity style={s.deleteBtn} onPress={onDelete}>
+        <TouchableOpacity style={s.deleteBtn} onPress={(e) => { e.stopPropagation?.(); onDelete(); }}>
           <Text style={s.deleteBtnText}>－</Text>
         </TouchableOpacity>
       )}
-    </View>
+    </Pressable>
   );
 }
 
@@ -630,6 +661,16 @@ const s = StyleSheet.create({
   stockChange:   { fontSize: 12, fontWeight: '500', marginTop: 2 },
   deleteBtn:     { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FDECEA', justifyContent: 'center', alignItems: 'center' },
   deleteBtnText: { fontSize: 18, color: '#E74C3C', lineHeight: 22 },
+
+  modalWrap:     { flex: 1, backgroundColor: '#F0F2F5' },
+  modalHeader:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#2C3E50', paddingHorizontal: 20, paddingVertical: 16 },
+  modalSymbol:   { fontSize: 20, fontWeight: 'bold', color: 'white' },
+  modalName:     { fontSize: 13, color: '#aaa', marginTop: 2 },
+  modalClose:    { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
+  modalCloseTxt: { fontSize: 16, color: 'white', fontWeight: 'bold' },
+  modalPrice:    { backgroundColor: 'white', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#eee', flexDirection: 'row', alignItems: 'baseline', gap: 12 },
+  modalPriceNum: { fontSize: 36, fontWeight: 'bold' },
+  modalPriceChg: { fontSize: 15, fontWeight: '600' },
 
   addBtn:     { margin: 16, marginBottom: 8, backgroundColor: '#2C3E50', paddingVertical: 13, borderRadius: 12, alignItems: 'center' },
   addBtnText: { color: 'white', fontSize: 15, fontWeight: 'bold' },

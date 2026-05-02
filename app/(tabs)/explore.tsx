@@ -65,7 +65,7 @@ function calcMA(closes: number[], period: number): number {
 function normalize(s: string): string {
   const t = s.trim().toUpperCase();
   if (t.includes('.')) return t;
-  return /^\d+$/.test(t) ? `${t}.TW` : t;
+  return /^\d+[A-Z]?$/.test(t) ? `${t}.TW` : t;
 }
 
 // ── API ──────────────────────────────────────────────────────

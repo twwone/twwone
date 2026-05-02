@@ -43,7 +43,7 @@ interface GroupedHolding {
 function normalize(s: string): string {
   const t = s.trim().toUpperCase();
   if (t.includes('.')) return t;
-  return /^\d+$/.test(t) ? `${t}.TW` : t;
+  return /^\d+[A-Z]?$/.test(t) ? `${t}.TW` : t;
 }
 
 function holdingDays(buyDate: string): number {

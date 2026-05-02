@@ -6,6 +6,8 @@ import {
   TouchableOpacity, View,
 } from 'react-native';
 
+import { getNameMap, resolveName } from '@/lib/stockNames';
+
 const STORAGE_KEY = '@portfolio_v1';
 const YF          = '/api/stock';
 
@@ -117,6 +119,7 @@ async function fetchAllPrices(list: Holding[]): Promise<Record<string, number>> 
 export default function PortfolioScreen() {
   const [holdings,       setHoldings]       = useState<Holding[]>([]);
   const [priceMap,       setPriceMap]       = useState<Record<string, number>>({});
+  const [nameMap,        setNameMap]        = useState<Record<string, string>>({});
   const [loading,        setLoading]        = useState(true);
   const [refreshing,     setRefreshing]     = useState(false);
   const [showModal,      setShowModal]      = useState(false);
@@ -155,7 +158,7 @@ export default function PortfolioScreen() {
     setRefreshing(false);
   };
 
-  useEffect(() => { loadAll(); }, []);
+  useEffect(() => { loadAll(); getNameMap().then(setNameMap); }, []);
   const onRefresh = () => { setRefreshing(true); loadAll(); };
 
   const addHolding = async () => {
@@ -175,7 +178,7 @@ export default function PortfolioScreen() {
     }
     const h: Holding = {
       id: Date.now().toString(), symbol,
-      name: info.name, lots, unit: fUnit, costPrice: cost,
+      name: resolveName(symbol, nameMap, info.name), lots, unit: fUnit, costPrice: cost,
       buyDate: fBuyDate.trim(), type: fType,
     };
     const next = [...holdings, h];
@@ -338,7 +341,7 @@ export default function PortfolioScreen() {
                 <View style={s.cardTop}>
                   <View style={{ flex: 1 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      <Text style={[s.cardName, g.isExited && { color: '#999' }]}>{g.name}</Text>
+                      <Text style={[s.cardName, g.isExited && { color: '#999' }]}>{resolveName(g.symbol, nameMap, g.name)}</Text>
                       {g.isExited && <View style={s.exitedBadge}><Text style={s.exitedBadgeText}>已出場</Text></View>}
                     </View>
                     <Text style={s.cardMeta}>
@@ -384,7 +387,7 @@ export default function PortfolioScreen() {
               <>
                 <View style={s.modalHeader}>
                   <View style={{ flex: 1 }}>
-                    <Text style={s.modalTitle}>{selectedGroup.name}</Text>
+                    <Text style={s.modalTitle}>{resolveName(selectedGroup.symbol, nameMap, selectedGroup.name)}</Text>
                     <Text style={s.detailSubtitle}>
                       {selectedGroup.symbol.replace('.TW', '')}　·　{selectedGroup.quantitySummary}
                     </Text>

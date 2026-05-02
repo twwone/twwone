@@ -6,6 +6,7 @@ import {
   TouchableOpacity, View,
 } from 'react-native';
 import { Holding } from './portfolio';
+import { getNameMap, resolveName } from '@/lib/stockNames';
 
 const PORTFOLIO_KEY = '@portfolio_v1';
 const CUSTOM_KEY    = '@radar_custom_pool';
@@ -145,6 +146,7 @@ export default function RadarScreen() {
   const [showManage,   setShowManage]   = useState(false);
   const [newSymbol,    setNewSymbol]    = useState('');
   const [addingCustom, setAddingCustom] = useState(false);
+  const [nameMap,      setNameMap]      = useState<Record<string, string>>({});
 
   // 加入庫存 modal
   const [addTarget, setAddTarget] = useState<{ symbol: string; name: string } | null>(null);
@@ -177,6 +179,7 @@ export default function RadarScreen() {
   };
 
   useEffect(() => {
+    getNameMap().then(setNameMap);
     (async () => {
       let custom: CustomStock[] = [];
       try {
@@ -197,9 +200,11 @@ export default function RadarScreen() {
       return;
     }
     setAddingCustom(true);
-    const name = await fetchStockName(symbol);
+    const yahooName = await fetchStockName(symbol);
     setAddingCustom(false);
-    if (!name) { Alert.alert('找不到', `請確認代號「${newSymbol}」是否正確`); return; }
+    if (!yahooName) { Alert.alert('找不到', `請確認代號「${newSymbol}」是否正確`); return; }
+    const map  = await getNameMap();
+    const name = resolveName(symbol, map, yahooName);
     const next = [...customPool, { symbol, name }];
     setCustomPool(next);
     await AsyncStorage.setItem(CUSTOM_KEY, JSON.stringify(next));
@@ -225,7 +230,7 @@ export default function RadarScreen() {
       const list: Holding[] = raw ? JSON.parse(raw) : [];
       const h: Holding = {
         id: Date.now().toString(),
-        symbol: addTarget.symbol, name: addTarget.name,
+        symbol: addTarget.symbol, name: resolveName(addTarget.symbol, nameMap, addTarget.name),
         lots, unit: pUnit, costPrice: cost, buyDate: pDate.trim(),
       };
       await AsyncStorage.setItem(PORTFOLIO_KEY, JSON.stringify([...list, h]));
@@ -257,7 +262,7 @@ export default function RadarScreen() {
         <View style={s.cardBody}>
           <View style={{ flex: 1, gap: 3 }}>
             <Text style={s.cardSymbol}>{item.symbol.replace('.TW', '')}</Text>
-            <Text style={s.cardName}>{item.name}</Text>
+            <Text style={s.cardName}>{resolveName(item.symbol, nameMap, item.name)}</Text>
             <Text style={[s.cardTag, { color: sig.color }]}>{sig.tag}</Text>
           </View>
           <View style={s.cardRight}>
@@ -361,7 +366,7 @@ export default function RadarScreen() {
                   {customPool.map(c => (
                     <View key={c.symbol} style={s.manageRow}>
                       <Text style={s.manageSymbol}>{c.symbol.replace('.TW', '')}</Text>
-                      <Text style={s.manageName}>{c.name}</Text>
+                      <Text style={s.manageName}>{resolveName(c.symbol, nameMap, c.name)}</Text>
                       <TouchableOpacity onPress={() => removeCustomStock(c.symbol)}>
                         <Text style={s.manageDelete}>刪除</Text>
                       </TouchableOpacity>
@@ -415,7 +420,7 @@ export default function RadarScreen() {
                 <Text style={s.modalTitle}>加入庫存</Text>
                 {addTarget && (
                   <Text style={s.modalSubtitle}>
-                    {addTarget.symbol.replace('.TW', '')}　·　{addTarget.name}
+                    {addTarget.symbol.replace('.TW', '')}　·　{resolveName(addTarget.symbol, nameMap, addTarget.name)}
                   </Text>
                 )}
               </View>

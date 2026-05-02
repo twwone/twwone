@@ -15,6 +15,7 @@ import {
   View,
 } from 'react-native';
 import KLineChart from '@/components/KLineChart';
+import { getNameMap, resolveName } from '@/lib/stockNames';
 
 // ── 型別定義 ──────────────────────────────────────────────
 type Tab = 'market' | 'watchlist' | 'search';
@@ -187,7 +188,9 @@ async function fetchStock(symbol: string): Promise<StockItem | null> {
     const json = await res.json();
     const m    = json.chart.result[0].meta;
     const chg  = m.regularMarketPrice - m.previousClose;
-    return { symbol, name: m.shortName ?? symbol, price: m.regularMarketPrice, change: chg, changePct: (chg / m.previousClose) * 100 };
+    const map  = await getNameMap();
+    const name = resolveName(symbol, map, m.shortName ?? symbol);
+    return { symbol, name, price: m.regularMarketPrice, change: chg, changePct: (chg / m.previousClose) * 100 };
   } catch { return null; }
 }
 
@@ -226,9 +229,11 @@ async function fetchStockWithIndicators(symbol: string): Promise<StockItem | nul
     const condB = rsi < 50;        // RSI 未超買
     const condC = todayVol > vma5; // 量能放大
 
-    const chg = m.regularMarketPrice - m.previousClose;
+    const chg  = m.regularMarketPrice - m.previousClose;
+    const map2 = await getNameMap();
+    const name = resolveName(symbol, map2, m.shortName ?? symbol);
     return {
-      symbol, name: m.shortName ?? symbol,
+      symbol, name,
       price: m.regularMarketPrice, change: chg, changePct: (chg / m.previousClose) * 100,
       ma5, ma20, rsi, volume: todayVol, vma5, condA, condB, condC,
     };
@@ -259,6 +264,7 @@ export default function App() {
   const [searchResult,  setSearchResult]  = useState<StockItem | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError,   setSearchError]   = useState<string | null>(null);
+  const [suggestions,   setSuggestions]   = useState<{ code: string; name: string }[]>([]);
 
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [marketOpen,  setMarketOpen]  = useState(isMarketOpen());
@@ -342,9 +348,42 @@ export default function App() {
     setWatchStocks(prev => prev.filter(s => s.symbol !== symbol));
   };
 
+  const handleQueryChange = async (text: string) => {
+    setQuery(text);
+    if (/[一-鿿]/.test(text) && text.length >= 1) {
+      const map = await getNameMap();
+      const hits = Object.entries(map)
+        .filter(([, name]) => name.includes(text))
+        .slice(0, 6)
+        .map(([code, name]) => ({ code, name }));
+      setSuggestions(hits);
+    } else {
+      setSuggestions([]);
+    }
+  };
+
+  const searchByCode = async (code: string) => {
+    const sym = normalize(code);
+    setSuggestions([]);
+    setSearchLoading(true); setSearchResult(null); setSearchError(null);
+    const result = await fetchStockWithIndicators(sym);
+    if (result) setSearchResult(result);
+    else setSearchError(`找不到「${sym}」，請確認代號是否正確`);
+    setSearchLoading(false);
+  };
+
   const doSearch = async () => {
+    const isChinese = /[一-鿿]/.test(query);
+    if (isChinese) {
+      const map   = await getNameMap();
+      const entry = Object.entries(map).find(([, name]) => name === query || name.includes(query));
+      if (!entry) { setSearchError(`找不到「${query}」，請確認名稱是否正確`); return; }
+      await searchByCode(entry[0]);
+      return;
+    }
     const sym = normalize(query);
     if (!sym) return;
+    setSuggestions([]);
     setSearchLoading(true); setSearchResult(null); setSearchError(null);
     const result = await fetchStockWithIndicators(sym);
     if (result) setSearchResult(result);
@@ -447,15 +486,28 @@ export default function App() {
       {tab === 'search' && (
         <ScrollView contentContainerStyle={[s.scroll, { paddingTop: 20 }]} keyboardShouldPersistTaps="handled">
           <Text style={s.sectionTitle}>查詢股票</Text>
-          <Text style={s.hint}>台股輸入數字代號（2330）；美股輸入英文代號（AAPL）</Text>
+          <Text style={s.hint}>台股：輸入代號（2330）或中文名稱（台積電）；美股：輸入英文代號（AAPL）</Text>
           <View style={s.searchRow}>
-            <TextInput style={s.searchInput} placeholder="2330 / 0050 / AAPL / TSLA"
-              placeholderTextColor="#bbb" value={query} onChangeText={setQuery}
+            <TextInput style={s.searchInput} placeholder="2330 / 台積電 / AAPL"
+              placeholderTextColor="#bbb" value={query} onChangeText={handleQueryChange}
               onSubmitEditing={doSearch} autoCapitalize="characters" returnKeyType="search" />
             <TouchableOpacity style={s.searchBtn} onPress={doSearch}>
               <Text style={s.searchBtnText}>查詢</Text>
             </TouchableOpacity>
           </View>
+
+          {suggestions.length > 0 && (
+            <View style={s.suggestBox}>
+              {suggestions.map(sg => (
+                <TouchableOpacity key={sg.code} style={s.suggestItem} onPress={() => {
+                  setQuery(sg.name); searchByCode(sg.code);
+                }}>
+                  <Text style={s.suggestCode}>{sg.code}</Text>
+                  <Text style={s.suggestName}>{sg.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
 
           {searchLoading && (
             <View style={{ alignItems: 'center', marginTop: 24, gap: 10 }}>
@@ -693,6 +745,11 @@ const s = StyleSheet.create({
   watchlistBtn:     { backgroundColor: '#2C3E50', borderRadius: 10, paddingVertical: 13, alignItems: 'center' },
   watchlistBtnDone: { backgroundColor: '#B2BABB' },
   watchlistBtnText: { color: 'white', fontWeight: 'bold', fontSize: 15 },
+
+  suggestBox:  { backgroundColor: 'white', borderRadius: 10, borderWidth: 1, borderColor: '#DDD', overflow: 'hidden', marginBottom: 4 },
+  suggestItem: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: '#F0F0F0', gap: 10 },
+  suggestCode: { fontSize: 13, fontWeight: 'bold', color: '#2C3E50', width: 60 },
+  suggestName: { fontSize: 14, color: '#555' },
 
   // ── 技術分析卡片 ──
   maCard: { backgroundColor: 'white', borderRadius: 16, padding: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 8, elevation: 3, gap: 14 },

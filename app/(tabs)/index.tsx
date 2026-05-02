@@ -76,7 +76,7 @@ function formatVol(shares: number): string {
 function normalize(input: string): string {
   const s = input.trim().toUpperCase();
   if (s.includes('.')) return s;
-  return /^\d+$/.test(s) ? `${s}.TW` : s;
+  return /^\d+[A-Z]?$/.test(s) ? `${s}.TW` : s;
 }
 
 function parseUpDown(s: string): number {

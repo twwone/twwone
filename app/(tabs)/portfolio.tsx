@@ -131,14 +131,19 @@ export default function PortfolioScreen() {
     setHoldings(local.holdings);
 
     // 並行：抓雲端資料 + 抓本地持股的即時報價
-    const [serverData, priceMap] = await Promise.all([
+    const [serverData, prices] = await Promise.all([
       fetchServerPortfolio(),
       fetchAllPrices(local.holdings),
     ]);
-    setPriceMap(priceMap);
+    setPriceMap(prices);
+
+    // 舊格式資料（updatedAt = 0）且本地有資料 → 主動推上雲端
+    if (local.updatedAt === 0 && local.holdings.length > 0) {
+      saveHoldings(local.holdings);
+    }
 
     // 雲端有更新的資料 → 覆蓋本地並重抓報價
-    if (serverData && serverData.updatedAt > local.updatedAt && serverData.holdings.length >= 0) {
+    if (serverData && serverData.updatedAt > local.updatedAt) {
       setHoldings(serverData.holdings);
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(serverData));
       const serverPrices = await fetchAllPrices(serverData.holdings);

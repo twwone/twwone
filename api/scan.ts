@@ -1,5 +1,5 @@
 import { kv } from '@vercel/kv';
-import { detectSignals, SignalConfig } from '../lib/signals';
+import { calcMA, detectSignals, SignalConfig } from '../lib/signals';
 
 const YF = 'https://query1.finance.yahoo.com/v8/finance/chart';
 
@@ -87,7 +87,6 @@ export default async function handler(req: any, res: any) {
     return res.status(500).json({ error: 'Vercel KV not configured' });
   }
 
-  // 合併自選股 + 庫存股（去重）
   const portfolioMap = new Map<string, PortfolioItem>(
     (settings?.portfolio ?? []).map(p => [p.symbol, p]),
   );
@@ -106,36 +105,96 @@ export default async function handler(req: any, res: any) {
     const data = await fetchStockData(symbol);
     if (!data) continue;
 
-    const signals = detectSignals(
-      data.closes, data.volumes, data.highs, data.lows, settings?.signalConfig ?? {} as SignalConfig,
-    );
+    const cfg      = settings?.signalConfig ?? {} as SignalConfig;
+    const signals  = detectSignals(data.closes, data.volumes, data.highs, data.lows, cfg);
+    const holding  = portfolioMap.get(symbol);
+    const shortSym = symbol.replace('.TW', '').replace('.TWO', '');
+    const price    = data.price;
+    const ma20     = calcMA(data.closes, 20);
+    const aboveMA20 = price > ma20;
 
-    const holding     = portfolioMap.get(symbol);
-    const isHolding   = !!holding;
-    const shortSym    = symbol.replace('.TW', '').replace('.TWO', '');
+    const entrySignals = signals.filter(s => s.category === 'entry');
+    const exitSignals  = signals.filter(s => s.category === 'exit');
 
-    for (const sig of signals) {
-      const coolKey = `alert:${symbol}:${sig.type}`;
-      if (await kv.get(coolKey)) continue;
+    // ── 第一層：趨勢過濾 + 第二層：主訊號 + 確認訊號 ─────
 
-      const icon = sig.category === 'exit' ? '📉' : '📊';
-      const lines = [
-        `${icon} <b>${sig.label}</b>  ·  ${shortSym}${isHolding ? '  ⭐ 持有中' : ''}`,
-        ``,
-        `<b>${data.name}</b>  ${data.price.toLocaleString()}`,
-        sig.detail,
-      ];
+    // 買進：KD 低檔黃金交叉（主）+ 帶量突破 或 RSI 超賣反彈（確認）+ MA20 上方
+    const hasKDEntry      = entrySignals.some(s => s.type === 'kdGoldenCross');
+    const hasConfirmEntry = entrySignals.some(s => s.type === 'volumeBreak' || s.type === 'rsiOversold');
 
-      if (isHolding && holding) {
-        const pnl    = (data.price - holding.costPrice) * holding.lots * 1000;
-        const pnlPct = ((data.price - holding.costPrice) / holding.costPrice) * 100;
-        const sign   = pnl >= 0 ? '+' : '';
-        lines.push(`成本 ${holding.costPrice.toLocaleString()} → ${sign}${Math.round(pnl).toLocaleString()} 元 (${sign}${pnlPct.toFixed(2)}%)`);
+    if (hasKDEntry && hasConfirmEntry && aboveMA20) {
+      const coolKey = `direct:buy:${symbol}`;
+      if (!await kv.get(coolKey)) {
+        const reasons = entrySignals.map(s => s.label).join(' + ');
+        const lines = [
+          `🟢 <b>買進訊號</b>  ·  ${shortSym}${holding ? '  ⭐ 持有中' : ''}`,
+          ``,
+          `<b>${data.name}</b>  現價 ${price.toLocaleString()}`,
+          `MA20 ${ma20.toFixed(2)} 上方，趨勢向上`,
+          reasons,
+        ];
+        if (holding) {
+          const pnl    = (price - holding.costPrice) * holding.lots * 1000;
+          const pnlPct = ((price - holding.costPrice) / holding.costPrice) * 100;
+          const sign   = pnl >= 0 ? '+' : '';
+          lines.push(`成本 ${holding.costPrice.toLocaleString()} → ${sign}${Math.round(pnl).toLocaleString()} 元 (${sign}${pnlPct.toFixed(2)}%)`);
+        }
+        await sendTelegram(lines.join('\n'));
+        await kv.set(coolKey, 1, { ex: 8 * 60 * 60 });
+        triggered.push(`${symbol}:buy`);
       }
+    }
 
-      await sendTelegram(lines.join('\n'));
-      await kv.set(coolKey, 1, { ex: 4 * 60 * 60 });
-      triggered.push(`${symbol}:${sig.type}`);
+    // 賣出：KD 高檔死亡交叉（主）+ RSI 超買 或 布林上軌（確認）
+    //       或：股價跌破 MA20 + 任一離場訊號
+    const hasKDExit      = exitSignals.some(s => s.type === 'kdDeathCross');
+    const hasConfirmExit = exitSignals.some(s => s.type === 'rsiOverbought' || s.type === 'bollingerUpper');
+    const sellByKD       = hasKDExit && hasConfirmExit;
+    const sellByMA       = !aboveMA20 && exitSignals.length >= 1;
+
+    if (sellByKD || sellByMA) {
+      const coolKey = `direct:sell:${symbol}`;
+      if (!await kv.get(coolKey)) {
+        const reasons = exitSignals.length
+          ? exitSignals.map(s => s.label).join(' + ')
+          : `跌破 MA20 ${ma20.toFixed(2)}`;
+        const lines = [
+          `🔴 <b>賣出訊號</b>  ·  ${shortSym}${holding ? '  ⭐ 持有中' : ''}`,
+          ``,
+          `<b>${data.name}</b>  現價 ${price.toLocaleString()}`,
+          reasons,
+        ];
+        if (holding) {
+          const pnl    = (price - holding.costPrice) * holding.lots * 1000;
+          const pnlPct = ((price - holding.costPrice) / holding.costPrice) * 100;
+          const sign   = pnl >= 0 ? '+' : '';
+          lines.push(`成本 ${holding.costPrice.toLocaleString()} → ${sign}${Math.round(pnl).toLocaleString()} 元 (${sign}${pnlPct.toFixed(2)}%)`);
+        }
+        await sendTelegram(lines.join('\n'));
+        await kv.set(coolKey, 1, { ex: 8 * 60 * 60 });
+        triggered.push(`${symbol}:sell`);
+      }
+    }
+
+    // ── 第三層：停損提醒（持有中才檢查，跌破成本 -5%）────
+    if (holding) {
+      const stopLossPrice = holding.costPrice * 0.95;
+      if (price < stopLossPrice) {
+        const coolKey = `stoploss:${symbol}`;
+        if (!await kv.get(coolKey)) {
+          const loss    = (price - holding.costPrice) * holding.lots * 1000;
+          const lossPct = ((price - holding.costPrice) / holding.costPrice) * 100;
+          await sendTelegram([
+            `🛑 <b>停損提醒</b>  ·  ${shortSym}`,
+            ``,
+            `<b>${data.name}</b>  現價 ${price.toLocaleString()}`,
+            `已跌破成本 -5%　成本 ${holding.costPrice.toLocaleString()}`,
+            `損失約 ${Math.round(loss).toLocaleString()} 元 (${lossPct.toFixed(2)}%)　持有 ${holding.lots} 張`,
+          ].join('\n'));
+          await kv.set(coolKey, 1, { ex: 4 * 60 * 60 });
+          triggered.push(`${symbol}:stoploss`);
+        }
+      }
     }
   }
 

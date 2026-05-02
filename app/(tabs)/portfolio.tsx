@@ -1,17 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  Modal,
-  RefreshControl,
-  SafeAreaView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+  ActivityIndicator, Alert, FlatList, Modal, RefreshControl,
+  SafeAreaView, ScrollView, StyleSheet, Text, TextInput,
+  TouchableOpacity, View,
 } from 'react-native';
 
 const STORAGE_KEY = '@portfolio_v1';
@@ -33,6 +25,18 @@ interface HoldingWithPrice extends Holding {
   pnl:          number;
   pnlPct:       number;
   days:         number;
+}
+
+interface GroupedHolding {
+  symbol:          string;
+  name:            string;
+  currentPrice:    number;
+  transactions:    HoldingWithPrice[];
+  totalCost:       number;
+  totalValue:      number;
+  totalPnl:        number;
+  totalPnlPct:     number;
+  quantitySummary: string;
 }
 
 // ── 工具 ──────────────────────────────────────────────────
@@ -72,12 +76,13 @@ async function saveHoldings(list: Holding[]): Promise<void> {
 
 // ── 主畫面 ────────────────────────────────────────────────
 export default function PortfolioScreen() {
-  const [holdings,   setHoldings]   = useState<Holding[]>([]);
-  const [priceMap,   setPriceMap]   = useState<Record<string, number>>({});
-  const [loading,    setLoading]    = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [showModal,  setShowModal]  = useState(false);
-  const [adding,     setAdding]     = useState(false);
+  const [holdings,       setHoldings]       = useState<Holding[]>([]);
+  const [priceMap,       setPriceMap]       = useState<Record<string, number>>({});
+  const [loading,        setLoading]        = useState(true);
+  const [refreshing,     setRefreshing]     = useState(false);
+  const [showModal,      setShowModal]      = useState(false);
+  const [adding,         setAdding]         = useState(false);
+  const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
 
   const [fSymbol,  setFSymbol]  = useState('');
   const [fLots,    setFLots]    = useState('');
@@ -137,6 +142,9 @@ export default function PortfolioScreen() {
         const next = holdings.filter(h => h.id !== id);
         setHoldings(next);
         await saveHoldings(next);
+        if (selectedSymbol && !next.some(h => h.symbol === selectedSymbol)) {
+          setSelectedSymbol(null);
+        }
       }},
     ]);
   };
@@ -155,6 +163,34 @@ export default function PortfolioScreen() {
   const totalPnl   = totalValue - totalCost;
   const totalPct   = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
 
+  // 依股票代號合併
+  const grouped: GroupedHolding[] = (() => {
+    const map: Record<string, HoldingWithPrice[]> = {};
+    for (const h of enriched) {
+      if (!map[h.symbol]) map[h.symbol] = [];
+      map[h.symbol].push(h);
+    }
+    return Object.entries(map).map(([symbol, txs]) => {
+      const tCost  = txs.reduce((a, h) => a + h.costPrice * h.lots * ((h.unit ?? '張') === '張' ? 1000 : 1), 0);
+      const tValue = txs.reduce((a, h) => a + h.currentPrice * h.lots * ((h.unit ?? '張') === '張' ? 1000 : 1), 0);
+      const tPnl   = tValue - tCost;
+      const tPct   = tCost > 0 ? (tPnl / tCost) * 100 : 0;
+      const 張lots  = txs.filter(h => (h.unit ?? '張') === '張').reduce((a, h) => a + h.lots, 0);
+      const 股lots  = txs.filter(h => h.unit === '股').reduce((a, h) => a + h.lots, 0);
+      const parts: string[] = [];
+      if (張lots > 0) parts.push(`${張lots}張`);
+      if (股lots > 0) parts.push(`${股lots}股`);
+      return {
+        symbol, name: txs[0].name, currentPrice: txs[0].currentPrice,
+        transactions: [...txs].sort((a, b) => (a.buyDate || '') < (b.buyDate || '') ? -1 : 1),
+        totalCost: tCost, totalValue: tValue, totalPnl: tPnl, totalPnlPct: tPct,
+        quantitySummary: parts.join(' + ') || '0',
+      };
+    });
+  })();
+
+  const selectedGroup = grouped.find(g => g.symbol === selectedSymbol) ?? null;
+
   return (
     <SafeAreaView style={s.container}>
       <View style={s.header}>
@@ -170,8 +206,8 @@ export default function PortfolioScreen() {
       {loading
         ? <View style={s.centered}><ActivityIndicator size="large" color="#2C3E50" /></View>
         : <FlatList
-            data={enriched}
-            keyExtractor={h => h.id}
+            data={grouped}
+            keyExtractor={g => g.symbol}
             contentContainerStyle={s.list}
             refreshControl={<RefreshControl refreshing={refreshing} tintColor="#2C3E50" onRefresh={onRefresh} />}
             ListHeaderComponent={
@@ -197,38 +233,105 @@ export default function PortfolioScreen() {
                 <Text style={s.hint}>尚無持股紀錄{'\n'}點上方按鈕新增第一筆</Text>
               </View>
             }
-            renderItem={({ item: h }) => (
-              <View style={[s.card, { borderLeftColor: tColor(h.pnl) }]}>
+            renderItem={({ item: g }) => (
+              <TouchableOpacity
+                style={[s.card, { borderLeftColor: tColor(g.totalPnl) }]}
+                onPress={() => setSelectedSymbol(g.symbol)}
+                activeOpacity={0.75}
+              >
                 <View style={s.cardTop}>
                   <View style={{ flex: 1 }}>
-                    <Text style={s.cardName}>{h.name}</Text>
+                    <Text style={s.cardName}>{g.name}</Text>
                     <Text style={s.cardMeta}>
-                      {h.symbol.replace('.TW', '')}　·　{h.lots} {h.unit ?? '張'}
-                      {h.days > 0 ? `　·　持有 ${h.days} 天` : ''}
+                      {g.symbol.replace('.TW', '')}　·　{g.quantitySummary}
+                      {g.transactions.length > 1 ? `　·　${g.transactions.length} 筆` : ''}
                     </Text>
                   </View>
                   <View style={s.cardRight}>
-                    <Text style={[s.cardPrice, { color: tColor(h.pnl) }]}>
-                      {h.currentPrice.toLocaleString()}
+                    <Text style={[s.cardPrice, { color: tColor(g.totalPnl) }]}>
+                      {g.currentPrice.toLocaleString()}
                     </Text>
-                    <Text style={[s.cardPct, { color: tColor(h.pnl) }]}>
-                      {sign(h.pnlPct)}{h.pnlPct.toFixed(2)}%
+                    <Text style={[s.cardPct, { color: tColor(g.totalPnl) }]}>
+                      {sign(g.totalPnlPct)}{g.totalPnlPct.toFixed(2)}%
                     </Text>
                   </View>
                 </View>
                 <View style={s.cardBottom}>
-                  <Text style={s.cardCost}>成本 {h.costPrice.toLocaleString()}</Text>
-                  <Text style={[s.cardPnl, { color: tColor(h.pnl) }]}>
-                    {sign(h.pnl)}{Math.round(h.pnl).toLocaleString()} 元
+                  <Text style={s.cardCost}>成本 {Math.round(g.totalCost).toLocaleString()}</Text>
+                  <Text style={[s.cardPnl, { color: tColor(g.totalPnl) }]}>
+                    {sign(g.totalPnl)}{Math.round(g.totalPnl).toLocaleString()} 元
                   </Text>
-                  <TouchableOpacity onPress={() => removeHolding(h.id)}>
-                    <Text style={s.deleteBtn}>刪除</Text>
-                  </TouchableOpacity>
+                  <Text style={s.cardArrow}>›</Text>
                 </View>
-              </View>
+              </TouchableOpacity>
             )}
           />
       }
+
+      {/* ── 交易明細 Modal ── */}
+      <Modal visible={selectedSymbol !== null} animationType="slide" transparent onRequestClose={() => setSelectedSymbol(null)}>
+        <View style={s.overlay}>
+          <View style={[s.modalBox, { paddingBottom: 32 }]}>
+            {selectedGroup && (
+              <>
+                <View style={s.modalHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.modalTitle}>{selectedGroup.name}</Text>
+                    <Text style={s.detailSubtitle}>
+                      {selectedGroup.symbol.replace('.TW', '')}　·　{selectedGroup.quantitySummary}
+                    </Text>
+                  </View>
+                  <TouchableOpacity onPress={() => setSelectedSymbol(null)}>
+                    <Text style={s.modalClose}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={s.detailSummaryRow}>
+                  <View>
+                    <Text style={s.detailSummaryLabel}>現價</Text>
+                    <Text style={s.detailSummaryVal}>{selectedGroup.currentPrice.toLocaleString()}</Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={s.detailSummaryLabel}>未實現損益</Text>
+                    <Text style={[s.detailSummaryPnl, { color: tColor(selectedGroup.totalPnl) }]}>
+                      {sign(selectedGroup.totalPnlPct)}{selectedGroup.totalPnlPct.toFixed(2)}%
+                      （{sign(selectedGroup.totalPnl)}{Math.round(selectedGroup.totalPnl).toLocaleString()}）
+                    </Text>
+                  </View>
+                </View>
+
+                <Text style={s.detailSectionTitle}>交易紀錄</Text>
+                <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
+                  {selectedGroup.transactions.map((tx, i) => (
+                    <View key={tx.id} style={[s.txRow, i < selectedGroup.transactions.length - 1 && s.txRowBorder]}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.txDate}>{tx.buyDate || '未填日期'}</Text>
+                        <Text style={s.txQty}>{tx.lots} {tx.unit ?? '張'}　@　{tx.costPrice.toLocaleString()}</Text>
+                      </View>
+                      <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                        <Text style={[s.txPnl, { color: tColor(tx.pnl) }]}>
+                          {sign(tx.pnl)}{Math.round(tx.pnl).toLocaleString()}
+                        </Text>
+                        <TouchableOpacity onPress={() => removeHolding(tx.id)}>
+                          <Text style={s.deleteBtn}>刪除</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ))}
+                </ScrollView>
+
+                <TouchableOpacity style={s.confirmBtn} onPress={() => {
+                  setSelectedSymbol(null);
+                  setFSymbol(selectedGroup.symbol.replace('.TW', ''));
+                  setShowModal(true);
+                }}>
+                  <Text style={s.confirmBtnText}>＋ 再次買進</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
 
       {/* ── 新增持股 Modal ── */}
       <Modal visible={showModal} animationType="slide" transparent onRequestClose={() => setShowModal(false)}>
@@ -322,7 +425,7 @@ const s = StyleSheet.create({
   cardBottom: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   cardCost:   { fontSize: 12, color: '#888' },
   cardPnl:    { fontSize: 14, fontWeight: 'bold', flex: 1 },
-  deleteBtn:  { fontSize: 12, color: '#E74C3C', fontWeight: '600' },
+  cardArrow:  { fontSize: 20, color: '#ccc' },
 
   overlay:    { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalBox:   { backgroundColor: 'white', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, gap: 8 },
@@ -340,4 +443,17 @@ const s = StyleSheet.create({
   confirmBtn:    { backgroundColor: '#2C3E50', borderRadius: 12, paddingVertical: 15, alignItems: 'center', marginTop: 8 },
   confirmBtnOff: { backgroundColor: '#95A5A6' },
   confirmBtnText:{ color: 'white', fontSize: 16, fontWeight: 'bold' },
+
+  detailSubtitle:     { fontSize: 12, color: '#999', marginTop: 2 },
+  detailSummaryRow:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', backgroundColor: '#F8F9FA', borderRadius: 12, padding: 14 },
+  detailSummaryLabel: { fontSize: 11, color: '#999', marginBottom: 3 },
+  detailSummaryVal:   { fontSize: 22, fontWeight: 'bold', color: '#2C3E50' },
+  detailSummaryPnl:   { fontSize: 14, fontWeight: '700' },
+  detailSectionTitle: { fontSize: 12, color: '#aaa', fontWeight: '600', marginTop: 4 },
+  txRow:       { flexDirection: 'row', paddingVertical: 12, alignItems: 'center' },
+  txRowBorder: { borderBottomWidth: 1, borderBottomColor: '#F0F2F5' },
+  txDate:      { fontSize: 13, color: '#555', fontWeight: '600', marginBottom: 3 },
+  txQty:       { fontSize: 12, color: '#999' },
+  txPnl:       { fontSize: 14, fontWeight: 'bold' },
+  deleteBtn:   { fontSize: 12, color: '#E74C3C', fontWeight: '600' },
 });

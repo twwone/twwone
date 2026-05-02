@@ -36,9 +36,8 @@ interface StockItem {
 }
 
 // ── 設定 ──────────────────────────────────────────────────
-const YF          = 'https://query1.finance.yahoo.com/v8/finance/chart';
-const TWSE_MARKET = 'https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?response=json';
-const YF_HEADERS  = { 'User-Agent': 'Mozilla/5.0' };
+const YF          = '/api/stock';
+const TWSE_MARKET = '/api/twse';
 const STORAGE_KEY = '@watchlist_v1';
 const POLL_MS     = 60_000;
 
@@ -181,7 +180,7 @@ async function saveList(symbols: string[]): Promise<void> {
 // ── API：快速（市場 + 自選股，只抓最新價）────────────────
 async function fetchStock(symbol: string): Promise<StockItem | null> {
   try {
-    const res  = await fetch(`${YF}/${encodeURIComponent(symbol)}`, { headers: YF_HEADERS });
+    const res  = await fetch(`${YF}?symbol=${encodeURIComponent(symbol)}`);
     if (!res.ok) return null;
     const json = await res.json();
     const m    = json.chart.result[0].meta;
@@ -194,8 +193,8 @@ async function fetchStock(symbol: string): Promise<StockItem | null> {
 async function fetchStockWithIndicators(symbol: string): Promise<StockItem | null> {
   try {
     // range=3mo 約 60 個交易日，足夠算 MA20 和 RSI14
-    const url    = `${YF}/${encodeURIComponent(symbol)}?interval=1d&range=3mo`;
-    const res    = await fetch(url, { headers: YF_HEADERS });
+    const url    = `${YF}?symbol=${encodeURIComponent(symbol)}&interval=1d&range=3mo`;
+    const res    = await fetch(url);
     if (!res.ok) return null;
 
     const json    = await res.json();
@@ -277,9 +276,9 @@ export default function App() {
   const loadMarket = async () => {
     try {
       const [idxRes, twseRes, ...stkRes] = await Promise.all([
-        fetch(`${YF}/%5ETWII`, { headers: YF_HEADERS }),
+        fetch(`${YF}?symbol=%5ETWII`),
         fetch(TWSE_MARKET),
-        ...MARKET_STOCKS.map(s => fetch(`${YF}/${s.symbol}`, { headers: YF_HEADERS })),
+        ...MARKET_STOCKS.map(s => fetch(`${YF}?symbol=${encodeURIComponent(s.symbol)}`)),
       ]);
       const idxJson = await idxRes.json();
       const m   = idxJson.chart.result[0].meta;

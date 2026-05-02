@@ -63,15 +63,50 @@ async function fetchPrice(symbol: string): Promise<{ price: number; name: string
   } catch { return null; }
 }
 
-async function loadHoldings(): Promise<Holding[]> {
+interface StoredPortfolio { holdings: Holding[]; updatedAt: number; }
+
+async function loadHoldings(): Promise<StoredPortfolio> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
+    if (!raw) return { holdings: [], updatedAt: 0 };
+    const parsed = JSON.parse(raw);
+    // 向下相容：舊格式是純陣列
+    if (Array.isArray(parsed)) return { holdings: parsed, updatedAt: 0 };
+    return parsed as StoredPortfolio;
+  } catch { return { holdings: [], updatedAt: 0 }; }
 }
 
-async function saveHoldings(list: Holding[]): Promise<void> {
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+async function saveHoldings(list: Holding[]): Promise<number> {
+  const updatedAt = Date.now();
+  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ holdings: list, updatedAt }));
+  syncToServer(list, updatedAt); // 背景同步，不等待
+  return updatedAt;
+}
+
+async function syncToServer(holdings: Holding[], updatedAt: number): Promise<void> {
+  try {
+    await fetch('/api/portfolio', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ holdings, updatedAt }),
+    });
+  } catch {} // 本地已存成功，雲端失敗靜默處理
+}
+
+async function fetchServerPortfolio(): Promise<StoredPortfolio | null> {
+  try {
+    const res = await fetch('/api/portfolio');
+    if (!res.ok) return null;
+    return await res.json() as StoredPortfolio;
+  } catch { return null; }
+}
+
+async function fetchAllPrices(list: Holding[]): Promise<Record<string, number>> {
+  if (!list.length) return {};
+  const results = await Promise.all(list.map(h => fetchPrice(h.symbol)));
+  const map: Record<string, number> = {};
+  list.forEach((h, i) => { if (results[i]) map[h.symbol] = results[i]!.price; });
+  return map;
 }
 
 // ── 主畫面 ────────────────────────────────────────────────
@@ -91,14 +126,25 @@ export default function PortfolioScreen() {
   const [fBuyDate, setFBuyDate] = useState('');
 
   const loadAll = async () => {
-    const h = await loadHoldings();
-    setHoldings(h);
-    if (h.length > 0) {
-      const results = await Promise.all(h.map(item => fetchPrice(item.symbol)));
-      const map: Record<string, number> = {};
-      h.forEach((item, i) => { if (results[i]) map[item.symbol] = results[i]!.price; });
-      setPriceMap(map);
+    // 先載入本地（快）
+    const local = await loadHoldings();
+    setHoldings(local.holdings);
+
+    // 並行：抓雲端資料 + 抓本地持股的即時報價
+    const [serverData, priceMap] = await Promise.all([
+      fetchServerPortfolio(),
+      fetchAllPrices(local.holdings),
+    ]);
+    setPriceMap(priceMap);
+
+    // 雲端有更新的資料 → 覆蓋本地並重抓報價
+    if (serverData && serverData.updatedAt > local.updatedAt && serverData.holdings.length >= 0) {
+      setHoldings(serverData.holdings);
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(serverData));
+      const serverPrices = await fetchAllPrices(serverData.holdings);
+      setPriceMap(serverPrices);
     }
+
     setLoading(false);
     setRefreshing(false);
   };

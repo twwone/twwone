@@ -1,5 +1,5 @@
 import { kv } from '@vercel/kv';
-import { detectSignals, SignalConfig } from '../../lib/signals';
+import { detectSignals, SignalConfig } from '../lib/signals';
 
 const YF = 'https://query1.finance.yahoo.com/v8/finance/chart';
 

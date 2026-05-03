@@ -38,6 +38,14 @@ function formatTime(ts: number): string {
   return `${hh}:${mm}`;
 }
 
+function isTWMarketOpen(): boolean {
+  const tw  = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+  const day = tw.getDay();
+  if (day === 0 || day === 6) return false;
+  const mins = tw.getHours() * 60 + tw.getMinutes();
+  return mins >= 9 * 60 && mins < 13 * 60 + 30;
+}
+
 // ── 主元件 ─────────────────────────────────────────────────────────
 
 export default function RadarScreen() {
@@ -53,6 +61,8 @@ export default function RadarScreen() {
   const [pCost,     setPCost]     = useState('');
   const [pDate,     setPDate]     = useState('');
   const [pSaving,   setPSaving]   = useState(false);
+
+  const [marketOpen, setMarketOpen] = useState(isTWMarketOpen());
 
   const initialized = useRef(false);
 
@@ -73,6 +83,11 @@ export default function RadarScreen() {
   useEffect(() => {
     getNameMap().then(setNameMap);
     load().then(() => { initialized.current = true; });
+  }, []);
+
+  useEffect(() => {
+    const t = setInterval(() => setMarketOpen(isTWMarketOpen()), 60 * 1000);
+    return () => clearInterval(t);
   }, []);
 
   useFocusEffect(useCallback(() => {
@@ -176,6 +191,11 @@ export default function RadarScreen() {
         <Text style={s.headerSub}>
           全市場海選 · 台股成交量前 150 · 每 30 分鐘自動更新
         </Text>
+        <View style={[s.marketBadge, marketOpen ? s.marketBadgeOpen : s.marketBadgeClosed]}>
+          <Text style={[s.marketBadgeText, marketOpen ? s.marketBadgeTextOpen : s.marketBadgeTextClosed]}>
+            {marketOpen ? '🟢 盤中即時掃描' : '🔒 已收盤 (顯示今日最終數據)'}
+          </Text>
+        </View>
       </View>
 
       {loading && (
@@ -278,6 +298,13 @@ const s = StyleSheet.create({
   header:      { backgroundColor: '#0D1B2A', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: '#1E3A5F' },
   headerTitle: { fontSize: 22, fontWeight: 'bold', color: '#F5F5F5' },
   headerSub:   { fontSize: 12, color: '#4A7FA5', marginTop: 4 },
+
+  marketBadge:           { alignSelf: 'flex-start', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4, marginTop: 8, borderWidth: 1 },
+  marketBadgeOpen:       { backgroundColor: '#0A2A1A', borderColor: '#27AE60' },
+  marketBadgeClosed:     { backgroundColor: '#1A1A2A', borderColor: '#2C4F6B' },
+  marketBadgeText:       { fontSize: 12, fontWeight: '600' },
+  marketBadgeTextOpen:   { color: '#2ECC71' },
+  marketBadgeTextClosed: { color: '#4A7FA5' },
 
   centered:     { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12, padding: 32 },
   loadingTitle: { fontSize: 16, fontWeight: '600', color: '#E0E0E0' },

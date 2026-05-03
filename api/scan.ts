@@ -291,7 +291,7 @@ async function runFullScan(): Promise<{ poolSize: number; stored: number; top: T
   }
 
   const top = results.sort((a, b) => b.score - a.score).slice(0, TOP_N);
-  await redis.set(TOP_KEY, JSON.stringify(top), 'EX', 35 * 60);
+  await redis.set(TOP_KEY, JSON.stringify(top), 'EX', 26 * 60 * 60);
 
   return { poolSize: pool.length, stored: top.length, top };
 }

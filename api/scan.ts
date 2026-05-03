@@ -1,11 +1,13 @@
+export const maxDuration = 60;
+
 import Redis from 'ioredis';
 import { calcMA, detectSignals, SignalConfig, DEFAULT_SIGNAL_CONFIG } from '../lib/signals';
 
 const redis = new Redis(process.env.REDIS_URL!, { lazyConnect: true, maxRetriesPerRequest: 2 });
 
 const YF           = 'https://query1.finance.yahoo.com/v8/finance/chart';
-const CHUNK        = 10;
-const POOL_SIZE    = 60;
+const CHUNK        = 5;
+const POOL_SIZE    = 30;
 const TOP_N        = 20;
 const POOL_KEY     = 'market:pool:v1';
 const TOP_KEY      = 'market:top_signals';
@@ -288,6 +290,7 @@ async function runFullScan(): Promise<{ poolSize: number; stored: number; top: T
     for (const item of fetched) {
       if (item) results.push(item);
     }
+    await new Promise(resolve => setTimeout(resolve, 1000));
   }
 
   const top = results.sort((a, b) => b.score - a.score).slice(0, TOP_N);

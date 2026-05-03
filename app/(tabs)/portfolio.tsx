@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useFocusEffect } from 'expo-router';
+import { useNavigation } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, FlatList, Modal, RefreshControl,
@@ -7,6 +7,7 @@ import {
   TouchableOpacity, View,
 } from 'react-native';
 
+import { useSyncData } from '@/hooks/useSyncData';
 import { getNameMap, resolveName } from '@/lib/stockNames';
 
 const STORAGE_KEY = '@portfolio_v1';
@@ -123,9 +124,8 @@ export default function PortfolioScreen() {
   const [holdings,       setHoldings]       = useState<Holding[]>([]);
   const [priceMap,       setPriceMap]       = useState<Record<string, number>>({});
   const [nameMap,        setNameMap]        = useState<Record<string, string>>({});
-  const [loading,        setLoading]        = useState(true);
-  const [refreshing,     setRefreshing]     = useState(false);
-  const [showModal,      setShowModal]      = useState(false);
+  const [loading,   setLoading]   = useState(true);
+  const [showModal, setShowModal] = useState(false);
   const [adding,         setAdding]         = useState(false);
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
 
@@ -158,29 +158,31 @@ export default function PortfolioScreen() {
       setPriceMap(serverPrices);
     }
     setLoading(false);
-    setRefreshing(false);
   };
 
   useEffect(() => { loadAll(); getNameMap().then(setNameMap); }, []);
 
-  // ── 切換 Tab 時靜默背景同步 ───────────────────────────────
-  const portfolioMounted = useRef(false);
-  useFocusEffect(
-    useCallback(() => {
-      if (!portfolioMounted.current) { portfolioMounted.current = true; return; }
-      (async () => {
-        const [local, server] = await Promise.all([loadHoldings(), fetchServerPortfolio()]);
-        if (server && server.updatedAt >= local.updatedAt) {
-          const next = server.holdings as Holding[];
-          setHoldings(next);
-          await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(server));
-          fetchAllPrices(next).then(setPriceMap);
-        }
-      })();
-    }, []),
-  );
+  // ── useSyncData：三合一刷新（60s interval + Tab 焦點 + 手動按鈕）──
+  const { isSyncing, triggerSync } = useSyncData(loadAll);
 
-  const onRefresh = () => { setRefreshing(true); loadAll(); };
+  // ── 動態設定 Navigation Header 右側刷新按鈕 ──────────────
+  const navigation = useNavigation();
+  useEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <TouchableOpacity
+          onPress={triggerSync}
+          disabled={isSyncing}
+          style={{ marginRight: 14, width: 34, height: 34, justifyContent: 'center', alignItems: 'center' }}
+        >
+          {isSyncing
+            ? <ActivityIndicator size="small" color="#FFFFFF" />
+            : <Text style={{ fontSize: 22, color: '#FFFFFF', fontWeight: 'bold' }}>↻</Text>
+          }
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation, isSyncing, triggerSync]);
 
   const addHolding = async () => {
     const symbol = normalize(fSymbol);
@@ -302,16 +304,7 @@ export default function PortfolioScreen() {
   const isSell = fType === 'sell';
 
   return (
-    <SafeAreaView style={s.container}>
-      <View style={s.header}>
-        <Text style={s.headerTitle}>我的庫存</Text>
-        {grouped.length > 0 && (
-          <Text style={[s.headerPnl, { color: tColor(totalPnl) }]}>
-            {sign(totalPnl)}{Math.round(totalPnl).toLocaleString()} 元
-            （{sign(totalPct)}{totalPct.toFixed(2)}%）
-          </Text>
-        )}
-      </View>
+    <View style={s.container}>
 
       {loading
         ? <View style={s.centered}><ActivityIndicator size="large" color="#2C3E50" /></View>
@@ -319,7 +312,7 @@ export default function PortfolioScreen() {
             data={grouped}
             keyExtractor={g => g.symbol}
             contentContainerStyle={s.list}
-            refreshControl={<RefreshControl refreshing={refreshing} tintColor="#2C3E50" onRefresh={onRefresh} />}
+            refreshControl={<RefreshControl refreshing={isSyncing} tintColor="#2C3E50" onRefresh={triggerSync} />}
             ListHeaderComponent={
               <>
                 {grouped.length > 0 && (
@@ -558,7 +551,7 @@ export default function PortfolioScreen() {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 

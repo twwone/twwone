@@ -9,6 +9,13 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 export default function TabLayout() {
   const colorScheme = useColorScheme();
 
+  const headerBase = {
+    headerShown: true,
+    headerStyle: { backgroundColor: '#2C3E50' },
+    headerTintColor: '#FFFFFF',
+    headerTitleStyle: { fontWeight: 'bold' as const, fontSize: 18 },
+  };
+
   return (
     <Tabs
       screenOptions={{
@@ -21,6 +28,7 @@ export default function TabLayout() {
         name="index"
         options={{
           title: '股票分析',
+          ...headerBase,
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="chart.line.uptrend.xyaxis" color={color} />,
         }}
       />
@@ -35,6 +43,7 @@ export default function TabLayout() {
         name="portfolio"
         options={{
           title: '我的庫存',
+          ...headerBase,
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="briefcase.fill" color={color} />,
         }}
       />

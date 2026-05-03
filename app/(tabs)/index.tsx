@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useFocusEffect } from 'expo-router';
+import { useNavigation } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -16,6 +16,7 @@ import {
   View,
 } from 'react-native';
 import KLineChart from '@/components/KLineChart';
+import { useSyncData } from '@/hooks/useSyncData';
 import { getNameMap, resolveName } from '@/lib/stockNames';
 
 // ── 型別定義 ──────────────────────────────────────────────
@@ -43,7 +44,6 @@ interface StockItem {
 const YF          = '/api/stock';
 const TWSE_MARKET = '/api/twse';
 const STORAGE_KEY = '@watchlist_v1';
-const POLL_MS     = 60_000;
 
 const DEFAULT_SYMBOLS = ['2330.TW', '2317.TW', '0050.TW', '2454.TW'];
 const MARKET_STOCKS   = [
@@ -277,12 +277,10 @@ export default function App() {
   const [marketStats,   setMarketStats]   = useState<MarketStats | null>(null);
   const [marketStocks,  setMarketStocks]  = useState<StockItem[]>([]);
   const [marketLoading, setMarketLoading] = useState(true);
-  const [marketRefresh, setMarketRefresh] = useState(false);
 
   const [watchSymbols, setWatchSymbols] = useState<string[]>([]);
   const [watchStocks,  setWatchStocks]  = useState<StockItem[]>([]);
   const [watchLoading, setWatchLoading] = useState(true);
-  const [watchRefresh, setWatchRefresh] = useState(false);
 
   const [query,         setQuery]         = useState('');
   const [searchResult,  setSearchResult]  = useState<StockItem | null>(null);
@@ -341,7 +339,7 @@ export default function App() {
       setMarketStocks(items);
       setLastUpdated(new Date());
     } catch {}
-    finally { setMarketLoading(false); setMarketRefresh(false); }
+    finally { setMarketLoading(false); }
   };
 
   const loadWatchlist = async (symbols?: string[]) => {
@@ -349,7 +347,6 @@ export default function App() {
     if (list.length > 0) setWatchLoading(true);
     setWatchStocks(await fetchMultiple(list));
     setWatchLoading(false);
-    setWatchRefresh(false);
   };
 
   // ── 靜默同步：比對 updatedAt，雲端 >= 本地才覆蓋 ─────────
@@ -369,7 +366,6 @@ export default function App() {
       setWatchSymbols(local.watchlist);
       watchSymbolsRef.current = local.watchlist;
       loadWatchlist(local.watchlist);
-      // 強制雲端優先：雲端 updatedAt >= 本地才覆蓋
       const server = await loadListFromServer();
       if (server && server.updatedAt >= local.updatedAt) {
         setWatchSymbols(server.watchlist);
@@ -378,19 +374,37 @@ export default function App() {
         loadWatchlist(server.watchlist);
       }
     });
-    const pollTimer   = setInterval(() => { const o = isMarketOpen(); setMarketOpen(o); if (!o) return; loadMarket(); const s = watchSymbolsRef.current; if (s.length > 0) fetchMultiple(s).then(setWatchStocks); }, POLL_MS);
+    // 只保留市場開收盤狀態輪詢（每 30 秒），不再自行管 fetch 定時器
     const statusTimer = setInterval(() => setMarketOpen(isMarketOpen()), 30_000);
-    return () => { clearInterval(pollTimer); clearInterval(statusTimer); };
+    return () => clearInterval(statusTimer);
   }, []);
 
-  // ── 切換 Tab 時靜默背景同步 ───────────────────────────────
-  const watchlistMounted = useRef(false);
-  useFocusEffect(
-    useCallback(() => {
-      if (!watchlistMounted.current) { watchlistMounted.current = true; return; }
-      silentSyncWatchlist();
-    }, [silentSyncWatchlist]),
-  );
+  // ── useSyncData：三合一刷新（60s interval + Tab 焦點 + 手動按鈕）──
+  const syncAll = useCallback(async () => {
+    setMarketOpen(isMarketOpen());
+    await Promise.all([loadMarket(), silentSyncWatchlist()]);
+  }, [silentSyncWatchlist]);
+
+  const { isSyncing, triggerSync } = useSyncData(syncAll);
+
+  // ── 動態設定 Navigation Header 右側刷新按鈕 ──────────────
+  const navigation = useNavigation();
+  useEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <TouchableOpacity
+          onPress={triggerSync}
+          disabled={isSyncing}
+          style={{ marginRight: 14, width: 34, height: 34, justifyContent: 'center', alignItems: 'center' }}
+        >
+          {isSyncing
+            ? <ActivityIndicator size="small" color="#FFFFFF" />
+            : <Text style={{ fontSize: 22, color: '#FFFFFF', fontWeight: 'bold' }}>↻</Text>
+          }
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation, isSyncing, triggerSync]);
 
   const addStock = async (symbol: string) => {
     if (watchSymbols.includes(symbol)) return;
@@ -449,7 +463,7 @@ export default function App() {
 
   // ── 畫面 ─────────────────────────────────────────────
   return (
-    <SafeAreaView style={s.container}>
+    <View style={s.container}>
 
       {/* K 線 Modal */}
       <Modal visible={!!selectedStock} animationType="slide" onRequestClose={() => setSelectedStock(null)}>
@@ -474,8 +488,6 @@ export default function App() {
         </SafeAreaView>
       </Modal>
 
-      <View style={s.header}><Text style={s.headerTitle}>我的股票分析器</Text></View>
-
       <View style={s.tabBar}>
         {(['market', 'watchlist', 'search'] as Tab[]).map(t => (
           <Pressable key={t} style={[s.tabItem, tab === t && s.tabActive]} onPress={() => setTab(t)}>
@@ -491,18 +503,6 @@ export default function App() {
         <Text style={s.statusText}>{marketOpen ? '交易中' : '已收盤'}</Text>
         {marketOpen && <Text style={s.statusSub}>　每 60 秒自動更新</Text>}
         {lastUpdated && <Text style={s.statusUpdated}>　{formatTime(lastUpdated)}</Text>}
-        <TouchableOpacity
-          style={s.refreshBtn}
-          onPress={() => {
-            if (tab === 'market')    { setMarketRefresh(true);  loadMarket(); }
-            if (tab === 'watchlist') { setWatchRefresh(true);   loadWatchlist(); }
-          }}
-        >
-          {(marketRefresh || watchRefresh)
-            ? <ActivityIndicator size="small" color="#2C3E50" />
-            : <Text style={s.refreshIcon}>↻</Text>
-          }
-        </TouchableOpacity>
       </View>
 
       {/* ─── 市場 Tab ──────────────────────────────────── */}
@@ -510,7 +510,7 @@ export default function App() {
         marketLoading
           ? <Center><ActivityIndicator size="large" color="#2C3E50" /><Text style={s.hint}>載入中...</Text></Center>
           : <ScrollView contentContainerStyle={s.scroll}
-              refreshControl={<RefreshControl refreshing={marketRefresh} tintColor="#2C3E50" onRefresh={() => { setMarketRefresh(true); loadMarket(); }} />}>
+              refreshControl={<RefreshControl refreshing={isSyncing} tintColor="#2C3E50" onRefresh={triggerSync} />}>
               {indexData   && <IndexCard data={indexData} />}
               {marketStats && <StatsRow stats={marketStats} />}
               <Text style={s.sectionTitle}>重點個股</Text>
@@ -531,7 +531,7 @@ export default function App() {
               ? <Center><Text style={s.hint}>尚無自選股{'\n'}點上方按鈕前往搜尋新增</Text></Center>
               : <FlatList data={watchStocks} keyExtractor={i => i.symbol}
                   contentContainerStyle={{ padding: 16, gap: 10 }}
-                  refreshControl={<RefreshControl refreshing={watchRefresh} tintColor="#2C3E50" onRefresh={() => { setWatchRefresh(true); loadWatchlist(); }} />}
+                  refreshControl={<RefreshControl refreshing={isSyncing} tintColor="#2C3E50" onRefresh={triggerSync} />}
                   renderItem={({ item }) => <StockCard stock={item} onPress={() => setSelectedStock(item)} onDelete={() => removeStock(item.symbol)} />}
                 />
           }
@@ -651,7 +651,7 @@ export default function App() {
           )}
         </ScrollView>
       )}
-    </SafeAreaView>
+    </View>
   );
 }
 

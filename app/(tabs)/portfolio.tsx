@@ -45,6 +45,7 @@ interface GroupedHolding {
   totalPnl:        number;
   quantitySummary: string;
   isExited:        boolean;
+  estNetValue:     number;
 }
 
 // ── 工具 ──────────────────────────────────────────────────
@@ -284,11 +285,22 @@ export default function PortfolioScreen() {
       }, 0);
 
       const netShares = totalBuyShares - totalSellShares;
-      // 未實現損益 = 預估淨現值（扣手續費+證交稅）- 剩餘買進成本
+      // 逐筆計算預估淨現值（FIFO 分配剩餘股數，每筆獨立1元低消，Math.floor 無條件捨去）
       const remainingCost = totalBuyShares > 0 ? (netShares / totalBuyShares) * trueTotalBuyCost : 0;
-      const estSellFee = netShares > 0 ? cathayCommission(netShares, cur) : 0;
-      const estSellTax = netShares > 0 ? cathaySellTax(netShares, cur, symbol) : 0;
-      const estNetValue = netShares > 0 ? netShares * cur - estSellFee - estSellTax : 0;
+      const twStock = /\.TWO?$/.test(symbol);
+      const lotTaxRate = twStock ? (isETF(symbol) ? 0.001 : 0.003) : 0;
+      let sharesToReduce = totalSellShares;
+      let estNetValue = 0;
+      for (const t of buyTx) {
+        const recordShares = toShares(t);
+        const remaining = Math.max(0, recordShares - sharesToReduce);
+        sharesToReduce = Math.max(0, sharesToReduce - recordShares);
+        if (remaining <= 0) continue;
+        const lotGross = Math.floor(remaining * cur);
+        const lotTax   = Math.floor(lotGross * lotTaxRate);
+        const lotFee   = Math.max(1, Math.floor(lotGross * 0.001425 * 0.28));
+        estNetValue   += lotGross - lotTax - lotFee;
+      }
       const unrealizedPnl = netShares > 0 ? estNetValue - remainingCost : 0;
       const unrealizedPct = remainingCost > 0 && netShares > 0
         ? (unrealizedPnl / remainingCost) * 100 : 0;
@@ -317,7 +329,7 @@ export default function PortfolioScreen() {
       return {
         symbol, name: txs[0].name, currentPrice: cur,
         transactions: [...annotated].sort((a, b) => (a.buyDate || '') < (b.buyDate || '') ? -1 : 1),
-        avgBuyPrice, netShares,
+        avgBuyPrice, netShares, estNetValue,
         realizedPnl, unrealizedPnl, unrealizedPct, totalPnl,
         quantitySummary: parts.join(' + ') || '已出場',
         isExited,
@@ -327,7 +339,7 @@ export default function PortfolioScreen() {
 
   const activeGroups       = grouped.filter(g => !g.isExited);
   const totalCost          = activeGroups.reduce((a, g) => a + g.avgBuyPrice * g.netShares, 0);
-  const totalValue         = activeGroups.reduce((a, g) => a + g.currentPrice * g.netShares, 0);
+  const totalValue         = activeGroups.reduce((a, g) => a + g.estNetValue, 0);
   const totalUnrealizedPnl = grouped.reduce((a, g) => a + g.unrealizedPnl, 0);
   const totalRealizedPnl   = grouped.reduce((a, g) => a + g.realizedPnl, 0);
   const totalPnl           = totalUnrealizedPnl + totalRealizedPnl;

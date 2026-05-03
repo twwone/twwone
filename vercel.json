@@ -2,9 +2,6 @@
   "buildCommand": "expo export -p web",
   "outputDirectory": "dist",
   "framework": null,
-  "functions": {
-    "api/scan.ts": { "maxDuration": 60 }
-  },
   "crons": [
     { "path": "/api/market-bell?type=tw-open",  "schedule": "0 1 * * 1-5" },
     { "path": "/api/market-bell?type=tw-close", "schedule": "30 5 * * 1-5" },

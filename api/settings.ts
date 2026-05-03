@@ -12,10 +12,11 @@ export default async function handler(req: any, res: any) {
 
   if (req.method === 'PATCH') {
     try {
-      const current = (await kv.get<any>('settings')) ?? {};
-      const merged  = { ...current, ...req.body, updatedAt: Date.now() };
+      const current   = (await kv.get<any>('settings')) ?? {};
+      const updatedAt = Date.now();
+      const merged    = { ...current, ...req.body, updatedAt };
       await kv.set('settings', merged);
-      return res.json({ ok: true });
+      return res.json({ ok: true, updatedAt });
     } catch {
       return res.status(500).json({ error: 'KV not configured' });
     }

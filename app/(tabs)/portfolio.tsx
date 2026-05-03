@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useEffect, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, FlatList, Modal, RefreshControl,
   SafeAreaView, ScrollView, StyleSheet, Text, TextInput,
@@ -101,7 +102,9 @@ async function syncToServer(holdings: Holding[], updatedAt: number): Promise<voi
 
 async function fetchServerPortfolio(): Promise<StoredPortfolio | null> {
   try {
-    const res = await fetch('/api/portfolio');
+    const res = await fetch('/api/portfolio', {
+      headers: { 'Cache-Control': 'no-cache' },
+    });
     if (!res.ok) return null;
     return await res.json() as StoredPortfolio;
   } catch { return null; }
@@ -148,7 +151,7 @@ export default function PortfolioScreen() {
     if (local.updatedAt === 0 && local.holdings.length > 0) {
       saveHoldings(local.holdings);
     }
-    if (serverData && serverData.updatedAt > local.updatedAt) {
+    if (serverData && serverData.updatedAt >= local.updatedAt) {
       setHoldings(serverData.holdings);
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(serverData));
       const serverPrices = await fetchAllPrices(serverData.holdings);
@@ -159,6 +162,24 @@ export default function PortfolioScreen() {
   };
 
   useEffect(() => { loadAll(); getNameMap().then(setNameMap); }, []);
+
+  // ── 切換 Tab 時靜默背景同步 ───────────────────────────────
+  const portfolioMounted = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!portfolioMounted.current) { portfolioMounted.current = true; return; }
+      (async () => {
+        const [local, server] = await Promise.all([loadHoldings(), fetchServerPortfolio()]);
+        if (server && server.updatedAt >= local.updatedAt) {
+          const next = server.holdings as Holding[];
+          setHoldings(next);
+          await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(server));
+          fetchAllPrices(next).then(setPriceMap);
+        }
+      })();
+    }, []),
+  );
+
   const onRefresh = () => { setRefreshing(true); loadAll(); };
 
   const addHolding = async () => {

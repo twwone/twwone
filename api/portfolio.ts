@@ -24,11 +24,12 @@ export default async function handler(req: any, res: any) {
   }
 
   if (req.method === 'POST') {
-    const { holdings, updatedAt } = req.body ?? {};
+    const { holdings } = req.body ?? {};
     if (!Array.isArray(holdings)) return res.status(400).json({ error: 'invalid' });
     try {
-      await redis.set(KEY, JSON.stringify({ holdings, updatedAt: updatedAt ?? Date.now() }));
-      res.json({ ok: true });
+      const updatedAt = Date.now();
+      await redis.set(KEY, JSON.stringify({ holdings, updatedAt }));
+      res.json({ ok: true, updatedAt });
     } catch {
       res.status(500).json({ error: 'Redis unavailable' });
     }

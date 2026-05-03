@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useEffect, useRef, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -170,27 +171,36 @@ const SIGNAL_CONFIG: Record<Signal, { emoji: string; label: string; sub: string;
 };
 
 // ── AsyncStorage + Server Sync ────────────────────────────
-async function loadList(): Promise<string[]> {
+interface StoredWatchlist { watchlist: string[]; updatedAt: number; }
+
+async function loadList(): Promise<StoredWatchlist> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : DEFAULT_SYMBOLS;
-  } catch { return DEFAULT_SYMBOLS; }
+    if (!raw) return { watchlist: DEFAULT_SYMBOLS, updatedAt: 0 };
+    const parsed = JSON.parse(raw);
+    // backward compat：舊版只存 string[]
+    if (Array.isArray(parsed)) return { watchlist: parsed, updatedAt: 0 };
+    return parsed as StoredWatchlist;
+  } catch { return { watchlist: DEFAULT_SYMBOLS, updatedAt: 0 }; }
 }
 async function saveList(symbols: string[]): Promise<void> {
-  try { await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(symbols)); } catch {}
-  // 自動推上伺服器，不阻塞
+  const updatedAt = Date.now();
+  try { await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ watchlist: symbols, updatedAt })); } catch {}
   fetch('/api/settings', {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ watchlist: symbols }),
   }).catch(() => {});
 }
-async function loadListFromServer(): Promise<string[] | null> {
+async function loadListFromServer(): Promise<StoredWatchlist | null> {
   try {
-    const res = await fetch('/api/settings');
+    const res = await fetch('/api/settings', {
+      headers: { 'Cache-Control': 'no-cache' },
+    });
     if (!res.ok) return null;
     const data = await res.json();
-    return Array.isArray(data.watchlist) && data.watchlist.length > 0 ? data.watchlist : null;
+    if (!Array.isArray(data.watchlist) || data.watchlist.length === 0) return null;
+    return { watchlist: data.watchlist, updatedAt: data.updatedAt ?? 0 };
   } catch { return null; }
 }
 
@@ -342,25 +352,45 @@ export default function App() {
     setWatchRefresh(false);
   };
 
+  // ── 靜默同步：比對 updatedAt，雲端 >= 本地才覆蓋 ─────────
+  const silentSyncWatchlist = useCallback(async () => {
+    const [local, server] = await Promise.all([loadList(), loadListFromServer()]);
+    if (server && server.updatedAt >= local.updatedAt) {
+      setWatchSymbols(server.watchlist);
+      watchSymbolsRef.current = server.watchlist;
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(server));
+      loadWatchlist(server.watchlist);
+    }
+  }, []);
+
   useEffect(() => {
     loadMarket();
-    loadList().then(async localSyms => {
-      setWatchSymbols(localSyms);
-      watchSymbolsRef.current = localSyms;
-      loadWatchlist(localSyms);
-      // 從伺服器載入，若有資料則覆蓋本機（跨裝置同步）
-      const serverSyms = await loadListFromServer();
-      if (serverSyms) {
-        setWatchSymbols(serverSyms);
-        watchSymbolsRef.current = serverSyms;
-        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(serverSyms));
-        loadWatchlist(serverSyms);
+    loadList().then(async local => {
+      setWatchSymbols(local.watchlist);
+      watchSymbolsRef.current = local.watchlist;
+      loadWatchlist(local.watchlist);
+      // 強制雲端優先：雲端 updatedAt >= 本地才覆蓋
+      const server = await loadListFromServer();
+      if (server && server.updatedAt >= local.updatedAt) {
+        setWatchSymbols(server.watchlist);
+        watchSymbolsRef.current = server.watchlist;
+        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(server));
+        loadWatchlist(server.watchlist);
       }
     });
     const pollTimer   = setInterval(() => { const o = isMarketOpen(); setMarketOpen(o); if (!o) return; loadMarket(); const s = watchSymbolsRef.current; if (s.length > 0) fetchMultiple(s).then(setWatchStocks); }, POLL_MS);
     const statusTimer = setInterval(() => setMarketOpen(isMarketOpen()), 30_000);
     return () => { clearInterval(pollTimer); clearInterval(statusTimer); };
   }, []);
+
+  // ── 切換 Tab 時靜默背景同步 ───────────────────────────────
+  const watchlistMounted = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!watchlistMounted.current) { watchlistMounted.current = true; return; }
+      silentSyncWatchlist();
+    }, [silentSyncWatchlist]),
+  );
 
   const addStock = async (symbol: string) => {
     if (watchSymbols.includes(symbol)) return;

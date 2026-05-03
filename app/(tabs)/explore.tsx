@@ -274,13 +274,25 @@ export default function RadarScreen() {
     setPSaving(true);
     try {
       const raw = await AsyncStorage.getItem(PORTFOLIO_KEY);
-      const list: Holding[] = raw ? JSON.parse(raw) : [];
+      let existing: Holding[] = [];
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        existing = Array.isArray(parsed) ? parsed : (parsed.holdings ?? []);
+      }
       const h: Holding = {
         id: Date.now().toString(),
         symbol: addTarget.symbol, name: resolveName(addTarget.symbol, nameMap, addTarget.name),
         lots, unit: pUnit, costPrice: cost, buyDate: pDate.trim(),
       };
-      await AsyncStorage.setItem(PORTFOLIO_KEY, JSON.stringify([...list, h]));
+      const next = [...existing, h];
+      const updatedAt = Date.now();
+      await AsyncStorage.setItem(PORTFOLIO_KEY, JSON.stringify({ holdings: next, updatedAt }));
+      // 同步到伺服器
+      fetch('/api/portfolio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ holdings: next, updatedAt }),
+      }).catch(() => {});
       Alert.alert('已加入庫存', `${addTarget.name} 已成功加入持股`);
       setAddTarget(null);
       setPLots(''); setPUnit('張'); setPCost(''); setPDate('');

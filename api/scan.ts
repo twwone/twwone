@@ -125,21 +125,25 @@ export default async function handler(req: any, res: any) {
     if (hasKDEntry && hasConfirmEntry && aboveMA20) {
       const coolKey = `direct:buy:${symbol}`;
       if (!await kv.get(coolKey)) {
-        const reasons = entrySignals.map(s => s.label).join(' + ');
-        const lines = [
-          `🟢 <b>買進訊號</b>  ·  ${shortSym}${holding ? '  ⭐ 持有中' : ''}`,
+        const currentPrice = price;
+        const stopLoss     = (currentPrice * 0.95).toFixed(2);
+        const label        = entrySignals.map(s => s.label).join(' + ');
+        const detail       = entrySignals.map(s => s.detail).join('\n💡 ');
+        const msg = [
+          `🟢 <b>【多頭進場指令】</b>`,
+          `━━━━━━━━━━━━━━`,
+          `🎯 <b>標的：</b> ${shortSym} ${data.name}`,
+          `💰 <b>目前市價：</b> ${currentPrice.toLocaleString()} 元`,
+          `📈 <b>觸發條件：</b> ${label}`,
+          `💡 <b>指標細節：</b> ${detail}`,
           ``,
-          `<b>${data.name}</b>  現價 ${price.toLocaleString()}`,
-          `MA20 ${ma20.toFixed(2)} 上方，趨勢向上`,
-          reasons,
-        ];
-        if (holding) {
-          const pnl    = (price - holding.costPrice) * holding.lots * 1000;
-          const pnlPct = ((price - holding.costPrice) / holding.costPrice) * 100;
-          const sign   = pnl >= 0 ? '+' : '';
-          lines.push(`成本 ${holding.costPrice.toLocaleString()} → ${sign}${Math.round(pnl).toLocaleString()} 元 (${sign}${pnlPct.toFixed(2)}%)`);
-        }
-        await sendTelegram(lines.join('\n'));
+          `🛡️ <b>【系統紀律建議】</b>`,
+          `1. <b>執行：</b> 建議於今日收盤前以「限價單」買進。`,
+          `2. <b>防守：</b> 硬性停損點設為 <b>${stopLoss} 元</b> (跌破無條件離場)。`,
+          `━━━━━━━━━━━━━━`,
+          `🤖 StockApp 雲端策略引擎`,
+        ].join('\n');
+        await sendTelegram(msg);
         await kv.set(coolKey, 1, { ex: 8 * 60 * 60 });
         triggered.push(`${symbol}:buy`);
       }
@@ -155,22 +159,28 @@ export default async function handler(req: any, res: any) {
     if (sellByKD || sellByMA) {
       const coolKey = `direct:sell:${symbol}`;
       if (!await kv.get(coolKey)) {
-        const reasons = exitSignals.length
+        const currentPrice = price;
+        const label = exitSignals.length
           ? exitSignals.map(s => s.label).join(' + ')
-          : `跌破 MA20 ${ma20.toFixed(2)}`;
-        const lines = [
-          `🔴 <b>賣出訊號</b>  ·  ${shortSym}${holding ? '  ⭐ 持有中' : ''}`,
+          : `跌破 MA20`;
+        const detail = exitSignals.length
+          ? exitSignals.map(s => s.detail).join('\n💡 ')
+          : `股價 ${currentPrice.toLocaleString()} 跌破 MA20 ${ma20.toFixed(2)}`;
+        const msg = [
+          `🔴 <b>【空頭離場指令】</b>`,
+          `━━━━━━━━━━━━━━`,
+          `🎯 <b>標的：</b> ${shortSym} ${data.name}`,
+          `💰 <b>目前市價：</b> ${currentPrice.toLocaleString()} 元`,
+          `📉 <b>觸發條件：</b> ${label}`,
+          `💡 <b>指標細節：</b> ${detail}`,
           ``,
-          `<b>${data.name}</b>  現價 ${price.toLocaleString()}`,
-          reasons,
-        ];
-        if (holding) {
-          const pnl    = (price - holding.costPrice) * holding.lots * 1000;
-          const pnlPct = ((price - holding.costPrice) / holding.costPrice) * 100;
-          const sign   = pnl >= 0 ? '+' : '';
-          lines.push(`成本 ${holding.costPrice.toLocaleString()} → ${sign}${Math.round(pnl).toLocaleString()} 元 (${sign}${pnlPct.toFixed(2)}%)`);
-        }
-        await sendTelegram(lines.join('\n'));
+          `🛡️ <b>【系統紀律建議】</b>`,
+          `1. <b>執行：</b> 建議立即清空手上所有 ${shortSym} 的部位。`,
+          `2. <b>狀態：</b> 強制獲利了結或停損，收回現金等待下次訊號。`,
+          `━━━━━━━━━━━━━━`,
+          `🤖 StockApp 雲端策略引擎`,
+        ].join('\n');
+        await sendTelegram(msg);
         await kv.set(coolKey, 1, { ex: 8 * 60 * 60 });
         triggered.push(`${symbol}:sell`);
       }

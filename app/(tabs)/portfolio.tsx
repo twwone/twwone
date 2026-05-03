@@ -63,6 +63,22 @@ const tColor = (n: number) => (n >= 0 ? '#E74C3C' : '#27AE60');
 const sign   = (n: number) => (n >= 0 ? '+' : '');
 const toShares = (h: Holding) => h.lots * ((h.unit ?? '張') === '張' ? 1000 : 1);
 
+// ── 國泰證券計費（電子下單2.8折，手續費0.1425%，最低1元）──────────
+const CATHAY_FEE_RATE = 0.001425 * 0.28;
+
+function cathayCommission(shares: number, price: number): number {
+  return Math.max(1, Math.round(shares * price * CATHAY_FEE_RATE));
+}
+
+function isETF(symbol: string): boolean {
+  return /\.TWO?$/.test(symbol) && symbol.replace(/\.TWO?$/, '').startsWith('0');
+}
+
+function cathaySellTax(shares: number, price: number, symbol: string): number {
+  if (!/\.TWO?$/.test(symbol)) return 0;
+  return Math.round(shares * price * (isETF(symbol) ? 0.001 : 0.003));
+}
+
 async function fetchPrice(symbol: string): Promise<{ price: number; name: string } | null> {
   try {
     const res  = await fetch(`${YF}?symbol=${encodeURIComponent(symbol)}`);
@@ -249,18 +265,33 @@ export default function PortfolioScreen() {
       const buyTx    = txs.filter(t => (t.type ?? 'buy') === 'buy');
       const sellTx   = txs.filter(t => t.type === 'sell');
 
-      const totalBuyShares  = buyTx.reduce((a, t) => a + toShares(t), 0);
-      const totalBuyCost    = buyTx.reduce((a, t) => a + t.costPrice * toShares(t), 0);
-      const avgBuyPrice     = totalBuyShares > 0 ? totalBuyCost / totalBuyShares : 0;
+      const totalBuyShares = buyTx.reduce((a, t) => a + toShares(t), 0);
+      // 真實買進總成本 = 每筆 (本金 + 國泰買進手續費)
+      const trueTotalBuyCost = buyTx.reduce((a, t) => {
+        const sh = toShares(t);
+        return a + sh * t.costPrice + cathayCommission(sh, t.costPrice);
+      }, 0);
+      const avgBuyPrice = totalBuyShares > 0 ? trueTotalBuyCost / totalBuyShares : 0;
 
-      const totalSellShares  = sellTx.reduce((a, t) => a + toShares(t), 0);
-      const totalSellRevenue = sellTx.reduce((a, t) => a + t.costPrice * toShares(t), 0);
-      const realizedPnl      = totalSellRevenue - avgBuyPrice * totalSellShares;
+      const totalSellShares = sellTx.reduce((a, t) => a + toShares(t), 0);
+      // 已實現損益 = 每筆賣出淨收益（扣手續費+證交稅）- 對應比例買進成本
+      const realizedPnl = sellTx.reduce((a, t) => {
+        const sh = toShares(t);
+        const gross = sh * t.costPrice;
+        const net = gross - cathayCommission(sh, t.costPrice) - cathaySellTax(sh, t.costPrice, symbol);
+        const costBasis = totalBuyShares > 0 ? (sh / totalBuyShares) * trueTotalBuyCost : 0;
+        return a + (net - costBasis);
+      }, 0);
 
-      const netShares      = totalBuyShares - totalSellShares;
-      const unrealizedPnl  = netShares > 0 ? (cur - avgBuyPrice) * netShares : 0;
-      const unrealizedPct  = avgBuyPrice > 0 && netShares > 0
-        ? (cur - avgBuyPrice) / avgBuyPrice * 100 : 0;
+      const netShares = totalBuyShares - totalSellShares;
+      // 未實現損益 = 預估淨現值（扣手續費+證交稅）- 剩餘買進成本
+      const remainingCost = totalBuyShares > 0 ? (netShares / totalBuyShares) * trueTotalBuyCost : 0;
+      const estSellFee = netShares > 0 ? cathayCommission(netShares, cur) : 0;
+      const estSellTax = netShares > 0 ? cathaySellTax(netShares, cur, symbol) : 0;
+      const estNetValue = netShares > 0 ? netShares * cur - estSellFee - estSellTax : 0;
+      const unrealizedPnl = netShares > 0 ? estNetValue - remainingCost : 0;
+      const unrealizedPct = remainingCost > 0 && netShares > 0
+        ? (unrealizedPnl / remainingCost) * 100 : 0;
       const totalPnl = realizedPnl + unrealizedPnl;
 
       // 數量摘要（淨持有）
@@ -273,11 +304,14 @@ export default function PortfolioScreen() {
       if (net股 > 0) parts.push(`${net股}股`);
       const isExited = net張 <= 0 && net股 <= 0;
 
-      // 賣出紀錄補上已實現 pnl（每筆按比例）
+      // 賣出紀錄補上已實現 pnl（扣國泰手續費+證交稅後淨收益 - 比例成本）
       const annotated = txs.map(t => {
         if (t.type !== 'sell') return t;
-        const contrib = (t.costPrice - avgBuyPrice) * toShares(t);
-        return { ...t, pnl: contrib };
+        const sh = toShares(t);
+        const gross = sh * t.costPrice;
+        const net = gross - cathayCommission(sh, t.costPrice) - cathaySellTax(sh, t.costPrice, symbol);
+        const costBasis = totalBuyShares > 0 ? (sh / totalBuyShares) * trueTotalBuyCost : 0;
+        return { ...t, pnl: net - costBasis };
       });
 
       return {

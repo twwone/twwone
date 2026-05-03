@@ -1,13 +1,5 @@
 {
   "buildCommand": "expo export -p web",
   "outputDirectory": "dist",
-  "framework": null,
-  "crons": [
-    { "path": "/api/market-bell?type=tw-open",  "schedule": "0 1 * * 1-5" },
-    { "path": "/api/market-bell?type=tw-close", "schedule": "30 5 * * 1-5" },
-    { "path": "/api/market-bell?type=us-open",  "schedule": "30 13 * * 1-5" },
-    { "path": "/api/market-bell?type=us-close", "schedule": "0 20 * * 1-5" },
-    { "path": "/api/scan?mode=fast", "schedule": "*/10 1-5 * * 1-5" },
-    { "path": "/api/scan?mode=full", "schedule": "0,30 1-5 * * 1-5" }
-  ]
+  "framework": null
 }

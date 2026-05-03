@@ -1,4 +1,6 @@
-import { kv } from '@vercel/kv';
+import Redis from 'ioredis';
+
+const redis = new Redis(process.env.REDIS_URL!, { lazyConnect: true, maxRetriesPerRequest: 2 });
 
 async function sendTelegram(text: string): Promise<{ ok: boolean; error?: string }> {
   const token  = process.env.TELEGRAM_BOT_TOKEN;
@@ -16,18 +18,18 @@ async function sendTelegram(text: string): Promise<{ ok: boolean; error?: string
 export default async function handler(req: any, res: any) {
   const results: Record<string, { ok: boolean; detail?: string }> = {};
 
-  // 測試 Vercel KV
+  // 測試 Redis
   try {
-    await kv.set('__test__', 1, { ex: 10 });
-    const val = await kv.get('__test__');
-    results.kv = val === 1 ? { ok: true } : { ok: false, detail: '寫入後讀取值不符' };
+    await redis.set('__test__', 1, 'EX', 10);
+    const val = await redis.get('__test__');
+    results.kv = val === '1' ? { ok: true } : { ok: false, detail: '寫入後讀取值不符' };
   } catch (e: any) {
-    results.kv = { ok: false, detail: e?.message ?? 'KV 連線失敗' };
+    results.kv = { ok: false, detail: e?.message ?? 'Redis 連線失敗' };
   }
 
   // 測試 Telegram
   const tgResult = await sendTelegram(
-    `✅ <b>連線測試成功</b>\n\nVercel KV：${results.kv.ok ? '正常 ✓' : '異常 ✗'}\nTelegram Bot：正常 ✓\n\n股票盯盤系統運作中`
+    `✅ <b>連線測試成功</b>\n\nRedis：${results.kv.ok ? '正常 ✓' : '異常 ✗'}\nTelegram Bot：正常 ✓\n\n股票盯盤系統運作中`
   );
   results.telegram = tgResult.ok
     ? { ok: true }

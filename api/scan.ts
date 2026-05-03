@@ -1,4 +1,6 @@
-import { kv } from '@vercel/kv';
+import Redis from 'ioredis';
+
+const redis = new Redis(process.env.REDIS_URL!, { lazyConnect: true, maxRetriesPerRequest: 2 });
 import { calcMA, detectSignals, SignalConfig } from '../lib/signals';
 
 const YF = 'https://query1.finance.yahoo.com/v8/finance/chart';
@@ -82,9 +84,10 @@ export default async function handler(req: any, res: any) {
 
   let settings: Settings | null = null;
   try {
-    settings = await kv.get<Settings>('settings');
+    const raw = await redis.get('settings');
+    settings = raw ? JSON.parse(raw) : null;
   } catch {
-    return res.status(500).json({ error: 'Vercel KV not configured' });
+    return res.status(500).json({ error: 'Redis not configured' });
   }
 
   const portfolioMap = new Map<string, PortfolioItem>(
@@ -124,7 +127,7 @@ export default async function handler(req: any, res: any) {
 
     if (hasKDEntry && hasConfirmEntry && aboveMA20) {
       const coolKey = `direct:buy:${symbol}`;
-      if (!await kv.get(coolKey)) {
+      if (!await redis.get(coolKey)) {
         const currentPrice = price;
         const stopLoss     = (currentPrice * 0.95).toFixed(2);
         const label        = entrySignals.map(s => s.label).join(' + ');
@@ -144,7 +147,7 @@ export default async function handler(req: any, res: any) {
           `🤖 StockApp 雲端策略引擎`,
         ].join('\n');
         await sendTelegram(msg);
-        await kv.set(coolKey, 1, { ex: 8 * 60 * 60 });
+        await redis.set(coolKey, 1, 'EX', 8 * 60 * 60);
         triggered.push(`${symbol}:buy`);
       }
     }
@@ -158,7 +161,7 @@ export default async function handler(req: any, res: any) {
 
     if (sellByKD || sellByMA) {
       const coolKey = `direct:sell:${symbol}`;
-      if (!await kv.get(coolKey)) {
+      if (!await redis.get(coolKey)) {
         const currentPrice = price;
         const label = exitSignals.length
           ? exitSignals.map(s => s.label).join(' + ')
@@ -181,7 +184,7 @@ export default async function handler(req: any, res: any) {
           `🤖 StockApp 雲端策略引擎`,
         ].join('\n');
         await sendTelegram(msg);
-        await kv.set(coolKey, 1, { ex: 8 * 60 * 60 });
+        await redis.set(coolKey, 1, 'EX', 8 * 60 * 60);
         triggered.push(`${symbol}:sell`);
       }
     }
@@ -191,7 +194,7 @@ export default async function handler(req: any, res: any) {
       const stopLossPrice = holding.costPrice * 0.95;
       if (price < stopLossPrice) {
         const coolKey = `stoploss:${symbol}`;
-        if (!await kv.get(coolKey)) {
+        if (!await redis.get(coolKey)) {
           const loss    = (price - holding.costPrice) * holding.lots * 1000;
           const lossPct = ((price - holding.costPrice) / holding.costPrice) * 100;
           await sendTelegram([
@@ -201,7 +204,7 @@ export default async function handler(req: any, res: any) {
             `已跌破成本 -5%　成本 ${holding.costPrice.toLocaleString()}`,
             `損失約 ${Math.round(loss).toLocaleString()} 元 (${lossPct.toFixed(2)}%)　持有 ${holding.lots} 張`,
           ].join('\n'));
-          await kv.set(coolKey, 1, { ex: 4 * 60 * 60 });
+          await redis.set(coolKey, 1, 'EX', 4 * 60 * 60);
           triggered.push(`${symbol}:stoploss`);
         }
       }

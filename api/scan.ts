@@ -288,6 +288,9 @@ async function runFullScan(): Promise<{ poolSize: number; stored: number; top: T
     for (const item of fetched) {
       if (item) results.push(item);
     }
+    if (i + CHUNK < pool.length) {
+      await new Promise(r => setTimeout(r, 200));
+    }
   }
 
   const top = results.sort((a, b) => b.score - a.score).slice(0, TOP_N);

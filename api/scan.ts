@@ -315,7 +315,8 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({ error: 'invalid mode', valid: ['fast', 'full'] });
   }
 
-  if (!isMarketOpen()) {
+  const force = req.query?.force === 'true';
+  if (!force && !isMarketOpen()) {
     return res.json({ skipped: 'market closed', mode, ts: new Date().toISOString() });
   }
 

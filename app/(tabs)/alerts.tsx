@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useEffect, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -22,9 +23,8 @@ import {
 
 const STORAGE_KEY_PROFILES  = '@signal_profiles_v2';
 const STORAGE_KEY_ACTIVE    = '@active_profile_id_v1';
+const STORAGE_KEY_UPDATED_AT = '@signal_profiles_updated_at_v1';
 const STORAGE_KEY_SIGNALS   = '@signal_config_v1'; // 舊格式，首次遷移用
-const STORAGE_KEY_WATCHLIST = '@watchlist_v1';
-const STORAGE_KEY_PORTFOLIO = '@portfolio_v1';
 
 interface SignalProfile {
   id: string;
@@ -34,14 +34,12 @@ interface SignalProfile {
 }
 
 const SIGNAL_META: Record<keyof SignalConfig, { name: string; desc: string }> = {
-  // 進場
   kdGoldenCross:   { name: 'KD 黃金交叉',      desc: 'K 線從低檔上穿 D 線，底部反轉強訊號' },
   rsiOversold:     { name: 'RSI 超賣反彈',      desc: 'RSI 從超賣區回升站上門檻，賣壓消化完畢' },
   maGoldenCross:   { name: 'MA 均線黃金交叉',   desc: '短均線上穿長均線，趨勢轉多頭排列' },
   bollingerBounce: { name: '布林下軌反彈',       desc: '股價跌破布林下軌後回彈入通道，均值回歸' },
   volumeBreak:     { name: '帶量突破',           desc: '成交量超過均量倍數並同時突破近期高點' },
   macdAboveZero:   { name: 'MACD 零軸上交叉',   desc: 'MACD 柱狀體在零軸以上由負翻正，多頭確認' },
-  // 離場
   kdDeathCross:    { name: 'KD 死亡交叉',       desc: 'K 線從高檔下穿 D 線，頭部反轉弱訊號' },
   rsiOverbought:   { name: 'RSI 超買回落',      desc: 'RSI 從超買區跌破門檻，追高風險升高' },
   maDeathCross:    { name: 'MA 均線死亡交叉',   desc: '短均線下穿長均線，趨勢轉空頭排列' },
@@ -75,62 +73,94 @@ export default function AlertsScreen() {
 
   const activeProfile = profiles.find(p => p.id === activeId) ?? profiles[0];
   const config = activeProfile?.config ?? DEFAULT_SIGNAL_CONFIG;
+  const initialized = useRef(false);
+  // ref 追蹤最新 activeId 供非同步閉包使用
+  const activeIdRef = useRef(activeId);
+  useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
 
-  useEffect(() => { loadProfiles(); }, []);
+  const pushToServer = useCallback((nextProfiles: SignalProfile[], nextActiveId: string) => {
+    const updatedAt = Date.now();
+    AsyncStorage.setItem(STORAGE_KEY_UPDATED_AT, String(updatedAt)).catch(() => {});
+    fetch('/api/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        signalProfiles: nextProfiles,
+        activeProfileId: nextActiveId,
+        signalProfilesUpdatedAt: updatedAt,
+      }),
+    }).catch(() => {});
+  }, []);
 
-  const loadProfiles = async () => {
-    const [raw, aid, legacyRaw] = await Promise.all([
-      AsyncStorage.getItem(STORAGE_KEY_PROFILES),
-      AsyncStorage.getItem(STORAGE_KEY_ACTIVE),
-      AsyncStorage.getItem(STORAGE_KEY_SIGNALS),
-    ]);
-    if (raw) {
-      const loaded: SignalProfile[] = JSON.parse(raw);
-      const migrated = loaded.map(p => ({
-        ...p,
-        config: { ...DEFAULT_SIGNAL_CONFIG, ...p.config },
-      }));
-      setProfiles(migrated);
-      const validId = aid && migrated.find(p => p.id === aid) ? aid : migrated[0]?.id ?? '';
-      setActiveId(validId);
-      await AsyncStorage.setItem(STORAGE_KEY_PROFILES, JSON.stringify(migrated));
-    } else {
-      const defaultConfig = legacyRaw ? { ...DEFAULT_SIGNAL_CONFIG, ...JSON.parse(legacyRaw) } : DEFAULT_SIGNAL_CONFIG;
-      const first: SignalProfile = { id: Date.now().toString(), name: '預設設定檔', ticker: '', config: defaultConfig };
-      setProfiles([first]);
-      setActiveId(first.id);
-      await AsyncStorage.setItem(STORAGE_KEY_PROFILES, JSON.stringify([first]));
-      await AsyncStorage.setItem(STORAGE_KEY_ACTIVE, first.id);
-    }
-    // 從伺服器載入設定檔（跨裝置同步）
+  const loadFromServer = useCallback(async (silent = false) => {
     try {
-      const res = await fetch('/api/settings');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.signalProfiles) && data.signalProfiles.length > 0) {
-          const serverProfiles: SignalProfile[] = data.signalProfiles.map((p: SignalProfile) => ({
-            ...p,
-            config: { ...DEFAULT_SIGNAL_CONFIG, ...p.config },
-          }));
-          setProfiles(serverProfiles);
-          const serverActiveId = data.activeProfileId && serverProfiles.find(p => p.id === data.activeProfileId)
-            ? data.activeProfileId
-            : serverProfiles[0]?.id ?? '';
-          setActiveId(serverActiveId);
-          await AsyncStorage.setItem(STORAGE_KEY_PROFILES, JSON.stringify(serverProfiles));
-          await AsyncStorage.setItem(STORAGE_KEY_ACTIVE, serverActiveId);
-        }
+      const res = await fetch('/api/settings', { headers: { 'Cache-Control': 'no-cache' } });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!Array.isArray(data.signalProfiles) || data.signalProfiles.length === 0) return;
+      const serverUpdatedAt: number = data.signalProfilesUpdatedAt ?? 0;
+      const localUpdatedAtRaw = await AsyncStorage.getItem(STORAGE_KEY_UPDATED_AT);
+      const localUpdatedAt = localUpdatedAtRaw ? Number(localUpdatedAtRaw) : 0;
+      if (serverUpdatedAt < localUpdatedAt) return;
+      const serverProfiles: SignalProfile[] = data.signalProfiles.map((p: SignalProfile) => ({
+        ...p, config: { ...DEFAULT_SIGNAL_CONFIG, ...p.config },
+      }));
+      const serverActiveId = data.activeProfileId && serverProfiles.find(p => p.id === data.activeProfileId)
+        ? data.activeProfileId
+        : serverProfiles[0]?.id ?? '';
+      setProfiles(serverProfiles);
+      setActiveId(serverActiveId);
+      await AsyncStorage.setItem(STORAGE_KEY_PROFILES, JSON.stringify(serverProfiles));
+      await AsyncStorage.setItem(STORAGE_KEY_ACTIVE, serverActiveId);
+      await AsyncStorage.setItem(STORAGE_KEY_UPDATED_AT, String(serverUpdatedAt));
+      if (!silent) {
+        const now = new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' });
+        setLastSync(now);
       }
     } catch {}
-  };
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      const [raw, aid, legacyRaw] = await Promise.all([
+        AsyncStorage.getItem(STORAGE_KEY_PROFILES),
+        AsyncStorage.getItem(STORAGE_KEY_ACTIVE),
+        AsyncStorage.getItem(STORAGE_KEY_SIGNALS),
+      ]);
+      if (raw) {
+        const loaded: SignalProfile[] = JSON.parse(raw);
+        const migrated = loaded.map(p => ({ ...p, config: { ...DEFAULT_SIGNAL_CONFIG, ...p.config } }));
+        setProfiles(migrated);
+        const validId = aid && migrated.find(p => p.id === aid) ? aid : migrated[0]?.id ?? '';
+        setActiveId(validId);
+        activeIdRef.current = validId;
+        await AsyncStorage.setItem(STORAGE_KEY_PROFILES, JSON.stringify(migrated));
+      } else {
+        const defaultConfig = legacyRaw ? { ...DEFAULT_SIGNAL_CONFIG, ...JSON.parse(legacyRaw) } : DEFAULT_SIGNAL_CONFIG;
+        const first: SignalProfile = { id: Date.now().toString(), name: '預設設定檔', ticker: '', config: defaultConfig };
+        setProfiles([first]);
+        setActiveId(first.id);
+        activeIdRef.current = first.id;
+        await AsyncStorage.setItem(STORAGE_KEY_PROFILES, JSON.stringify([first]));
+        await AsyncStorage.setItem(STORAGE_KEY_ACTIVE, first.id);
+      }
+      await loadFromServer();
+      initialized.current = true;
+    })();
+  }, []);
+
+  useFocusEffect(useCallback(() => {
+    if (!initialized.current) return;
+    loadFromServer(true);
+  }, [loadFromServer]));
 
   const persistProfiles = async (next: SignalProfile[], nextId?: string) => {
+    const resolvedId = nextId ?? activeIdRef.current;
     setProfiles(next);
+    if (nextId !== undefined) { setActiveId(nextId); activeIdRef.current = nextId; }
     await AsyncStorage.setItem(STORAGE_KEY_PROFILES, JSON.stringify(next));
-    if (nextId !== undefined) {
-      setActiveId(nextId);
-      await AsyncStorage.setItem(STORAGE_KEY_ACTIVE, nextId);
-    }
+    if (nextId !== undefined) await AsyncStorage.setItem(STORAGE_KEY_ACTIVE, nextId);
+    pushToServer(next, resolvedId);
   };
 
   const saveConfig = async (next: SignalConfig) => {
@@ -139,8 +169,10 @@ export default function AlertsScreen() {
 
   const switchProfile = async (id: string) => {
     setActiveId(id);
+    activeIdRef.current = id;
     await AsyncStorage.setItem(STORAGE_KEY_ACTIVE, id);
     setShowPicker(false);
+    pushToServer(profiles, id);
   };
 
   const createProfile = async () => {
@@ -152,9 +184,7 @@ export default function AlertsScreen() {
       config: { ...DEFAULT_SIGNAL_CONFIG },
     };
     await persistProfiles([...profiles, profile], profile.id);
-    setNewName('');
-    setNewTicker('');
-    setShowNewForm(false);
+    setNewName(''); setNewTicker(''); setShowNewForm(false);
   };
 
   const deleteProfile = () => {
@@ -179,25 +209,25 @@ export default function AlertsScreen() {
   const syncToBackend = async () => {
     setSyncing(true);
     try {
-      const [wRaw, pRaw] = await Promise.all([
-        AsyncStorage.getItem(STORAGE_KEY_WATCHLIST),
-        AsyncStorage.getItem(STORAGE_KEY_PORTFOLIO),
-      ]);
-      const watchlist = wRaw ? JSON.parse(wRaw) : [];
-      const portfolio = pRaw ? JSON.parse(pRaw) : [];
-      const res = await fetch('/api/register', {
-        method: 'POST',
+      const updatedAt = Date.now();
+      await AsyncStorage.setItem(STORAGE_KEY_UPDATED_AT, String(updatedAt));
+      const res = await fetch('/api/settings', {
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ watchlist, signalConfig: config, portfolio, signalProfiles: profiles, activeProfileId: activeId }),
+        body: JSON.stringify({
+          signalProfiles: profiles,
+          activeProfileId: activeId,
+          signalProfilesUpdatedAt: updatedAt,
+        }),
       });
       if (res.ok) {
         const now = new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' });
         setLastSync(now);
         const entryOn = ENTRY_SIGNAL_KEYS.filter(k => config[k].enabled).length;
         const exitOn  = EXIT_SIGNAL_KEYS.filter(k => config[k].enabled).length;
-        Alert.alert('同步成功 ✓', `後台已更新\n自選股：${watchlist.length} 檔\n庫存：${portfolio.length} 檔\n進場訊號：${entryOn} 個　離場訊號：${exitOn} 個`);
+        Alert.alert('同步成功 ✓', `設定已上傳\n進場訊號：${entryOn} 個　離場訊號：${exitOn} 個`);
       } else {
-        Alert.alert('同步失敗', '請確認 Vercel KV 已設定完成');
+        Alert.alert('同步失敗', '請確認伺服器連線');
       }
     } catch {
       Alert.alert('同步失敗', '網路錯誤，請稍後再試');
@@ -330,7 +360,7 @@ export default function AlertsScreen() {
         >
           {syncing
             ? <ActivityIndicator size="small" color="white" />
-            : <Text style={s.syncBtnText}>同步設定到後台</Text>
+            : <Text style={s.syncBtnText}>強制同步到後台</Text>
           }
         </TouchableOpacity>
         {lastSync && <Text style={s.lastSync}>上次同步：{lastSync}　設定已生效</Text>}
@@ -339,7 +369,7 @@ export default function AlertsScreen() {
           <Text style={s.infoTitle}>使用說明</Text>
           <Text style={s.infoText}>1. 在「自選股」頁加入你要盯的股票</Text>
           <Text style={s.infoText}>2. 開啟想要的進場 / 離場訊號並調整參數</Text>
-          <Text style={s.infoText}>3. 點「同步設定到後台」儲存</Text>
+          <Text style={s.infoText}>3. 設定變更後自動同步到後台（切換 Tab 時生效）</Text>
           <Text style={s.infoText}>4. 觸發時自動傳訊息到你的 Telegram</Text>
           <Text style={s.infoNote}>每個訊號觸發後有 4 小時冷卻，不重複推播</Text>
         </View>
@@ -383,7 +413,6 @@ const s = StyleSheet.create({
   sectionTitle:  { fontSize: 16, fontWeight: 'bold', color: '#2C3E50' },
   sectionDesc:   { fontSize: 12, color: '#888', marginTop: -6, marginBottom: 4 },
 
-  // profile
   profileSection:     { gap: 8 },
   profileRow:         { flexDirection: 'row', gap: 8, alignItems: 'stretch' },
   profilePicker:      { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: 'white', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
@@ -400,7 +429,6 @@ const s = StyleSheet.create({
   newFormConfirm:     { backgroundColor: '#2C3E50', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 4 },
   newFormConfirmText: { color: 'white', fontWeight: 'bold', fontSize: 15 },
 
-  // signals
   signalCard:    { backgroundColor: 'white', borderRadius: 14, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
   signalCardOn:  { borderLeftWidth: 3, borderLeftColor: '#2C3E50' },
   signalHeader:  { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
@@ -425,7 +453,6 @@ const s = StyleSheet.create({
   infoText:  { fontSize: 12, color: '#5D6D7E', lineHeight: 20 },
   infoNote:  { fontSize: 11, color: '#7FB3D3', marginTop: 4, fontStyle: 'italic' },
 
-  // modal
   modalOverlay:         { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },
   pickerSheet:          { backgroundColor: 'white', borderRadius: 16, width: '100%', overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 12, elevation: 8 },
   pickerTitle:          { fontSize: 14, fontWeight: 'bold', color: '#888', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },

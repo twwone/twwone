@@ -352,8 +352,8 @@ export default function PortfolioScreen() {
                 {grouped.length > 0 && (
                   <View style={s.overviewCard}>
                     <View style={s.overviewRow}>
-                      <OverviewItem label="持倉成本" value={`${Math.round(totalCost / 1000)}K`} />
-                      <OverviewItem label="目前市值" value={`${Math.round(totalValue / 1000)}K`} />
+                      <OverviewItem label="持倉成本" value={Math.round(totalCost).toLocaleString()} />
+                      <OverviewItem label="目前市值" value={Math.round(totalValue).toLocaleString()} />
                       <OverviewItem label="未實現損益"
                         value={`${sign(totalUnrealizedPnl)}${Math.round(totalUnrealizedPnl).toLocaleString()}`}
                         color={tColor(totalUnrealizedPnl)} />

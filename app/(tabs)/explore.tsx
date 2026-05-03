@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useEffect, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, FlatList, Modal, RefreshControl,
   SafeAreaView, ScrollView, StyleSheet, Text, TextInput,
@@ -178,6 +179,22 @@ export default function RadarScreen() {
     }
   };
 
+  const loadFromServer = useCallback(async (silent = false) => {
+    try {
+      const res = await fetch('/api/settings', { headers: { 'Cache-Control': 'no-cache' } });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data.radarCustomPool)) {
+        const serverCustom: CustomStock[] = data.radarCustomPool;
+        setCustomPool(serverCustom);
+        await AsyncStorage.setItem(CUSTOM_KEY, JSON.stringify(serverCustom));
+        if (!silent) scan(serverCustom);
+      }
+    } catch {}
+  }, []);
+
+  const initialized = useRef(false);
+
   useEffect(() => {
     getNameMap().then(setNameMap);
     (async () => {
@@ -187,21 +204,15 @@ export default function RadarScreen() {
         if (raw) { custom = JSON.parse(raw); setCustomPool(custom); }
       } catch {}
       scan(custom);
-      // 從伺服器載入自訂清單（跨裝置同步）
-      try {
-        const res = await fetch('/api/settings');
-        if (res.ok) {
-          const data = await res.json();
-          if (Array.isArray(data.radarCustomPool) && data.radarCustomPool.length > 0) {
-            const serverCustom: CustomStock[] = data.radarCustomPool;
-            setCustomPool(serverCustom);
-            await AsyncStorage.setItem(CUSTOM_KEY, JSON.stringify(serverCustom));
-            scan(serverCustom);
-          }
-        }
-      } catch {}
+      await loadFromServer();
+      initialized.current = true;
     })();
   }, []);
+
+  useFocusEffect(useCallback(() => {
+    if (!initialized.current) return;
+    loadFromServer(true);
+  }, [loadFromServer]));
 
   const onRefresh = () => { setRefreshing(true); setScanned(0); scan(); };
 

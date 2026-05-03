@@ -184,12 +184,19 @@ export default function RadarScreen() {
       const res = await fetch('/api/settings', { headers: { 'Cache-Control': 'no-cache' } });
       if (!res.ok) return;
       const data = await res.json();
-      if (Array.isArray(data.radarCustomPool)) {
-        const serverCustom: CustomStock[] = data.radarCustomPool;
-        setCustomPool(serverCustom);
-        await AsyncStorage.setItem(CUSTOM_KEY, JSON.stringify(serverCustom));
-        if (!silent) scan(serverCustom);
-      }
+      if (!Array.isArray(data.radarCustomPool)) return;
+      const serverUpdatedAt: number = data.radarCustomPoolUpdatedAt ?? 0;
+      // 比對本地時戳，本地較新時不覆蓋
+      let localUpdatedAt = 0;
+      try {
+        const raw = await AsyncStorage.getItem(CUSTOM_KEY);
+        if (raw) { const parsed = JSON.parse(raw); localUpdatedAt = parsed.updatedAt ?? 0; }
+      } catch {}
+      if (serverUpdatedAt < localUpdatedAt) return;
+      const serverCustom: CustomStock[] = data.radarCustomPool;
+      setCustomPool(serverCustom);
+      await AsyncStorage.setItem(CUSTOM_KEY, JSON.stringify({ pool: serverCustom, updatedAt: serverUpdatedAt }));
+      if (!silent) scan(serverCustom);
     } catch {}
   }, []);
 
@@ -201,7 +208,11 @@ export default function RadarScreen() {
       let custom: CustomStock[] = [];
       try {
         const raw = await AsyncStorage.getItem(CUSTOM_KEY);
-        if (raw) { custom = JSON.parse(raw); setCustomPool(custom); }
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          custom = Array.isArray(parsed) ? parsed : (parsed.pool ?? []);
+          setCustomPool(custom);
+        }
       } catch {}
       scan(custom);
       await loadFromServer();
@@ -216,11 +227,11 @@ export default function RadarScreen() {
 
   const onRefresh = () => { setRefreshing(true); setScanned(0); scan(); };
 
-  const syncCustomPoolToServer = (pool: CustomStock[]) => {
+  const syncCustomPoolToServer = (pool: CustomStock[], updatedAt: number) => {
     fetch('/api/settings', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ radarCustomPool: pool }),
+      body: JSON.stringify({ radarCustomPool: pool, radarCustomPoolUpdatedAt: updatedAt }),
     }).catch(() => {});
   };
 
@@ -238,17 +249,19 @@ export default function RadarScreen() {
     const map  = await getNameMap();
     const name = resolveName(symbol, map, yahooName);
     const next = [...customPool, { symbol, name }];
+    const ts   = Date.now();
     setCustomPool(next);
-    await AsyncStorage.setItem(CUSTOM_KEY, JSON.stringify(next));
-    syncCustomPoolToServer(next);
+    await AsyncStorage.setItem(CUSTOM_KEY, JSON.stringify({ pool: next, updatedAt: ts }));
+    syncCustomPoolToServer(next, ts);
     setNewSymbol('');
   };
 
   const removeCustomStock = async (symbol: string) => {
     const next = customPool.filter(c => c.symbol !== symbol);
+    const ts   = Date.now();
     setCustomPool(next);
-    await AsyncStorage.setItem(CUSTOM_KEY, JSON.stringify(next));
-    syncCustomPoolToServer(next);
+    await AsyncStorage.setItem(CUSTOM_KEY, JSON.stringify({ pool: next, updatedAt: ts }));
+    syncCustomPoolToServer(next, ts);
   };
 
   const saveToPortfolio = async () => {

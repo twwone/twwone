@@ -189,7 +189,7 @@ async function saveList(symbols: string[]): Promise<void> {
   fetch('/api/settings', {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ watchlist: symbols }),
+    body: JSON.stringify({ watchlist: symbols, watchlistUpdatedAt: updatedAt }),
   }).catch(() => {});
 }
 async function loadListFromServer(): Promise<StoredWatchlist | null> {
@@ -200,7 +200,7 @@ async function loadListFromServer(): Promise<StoredWatchlist | null> {
     if (!res.ok) return null;
     const data = await res.json();
     if (!Array.isArray(data.watchlist) || data.watchlist.length === 0) return null;
-    return { watchlist: data.watchlist, updatedAt: data.updatedAt ?? 0 };
+    return { watchlist: data.watchlist, updatedAt: data.watchlistUpdatedAt ?? data.updatedAt ?? 0 };
   } catch { return null; }
 }
 

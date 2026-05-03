@@ -5,7 +5,7 @@ const redis = new Redis(process.env.REDIS_URL!, { lazyConnect: true, maxRetriesP
 
 const YF           = 'https://query1.finance.yahoo.com/v8/finance/chart';
 const CHUNK        = 10;
-const POOL_SIZE    = 150;
+const POOL_SIZE    = 60;
 const TOP_N        = 20;
 const POOL_KEY     = 'market:pool:v1';
 const TOP_KEY      = 'market:top_signals';
@@ -287,9 +287,6 @@ async function runFullScan(): Promise<{ poolSize: number; stored: number; top: T
     );
     for (const item of fetched) {
       if (item) results.push(item);
-    }
-    if (i + CHUNK < pool.length) {
-      await new Promise(r => setTimeout(r, 200));
     }
   }
 

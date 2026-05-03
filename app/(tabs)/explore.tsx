@@ -187,10 +187,31 @@ export default function RadarScreen() {
         if (raw) { custom = JSON.parse(raw); setCustomPool(custom); }
       } catch {}
       scan(custom);
+      // 從伺服器載入自訂清單（跨裝置同步）
+      try {
+        const res = await fetch('/api/settings');
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.radarCustomPool) && data.radarCustomPool.length > 0) {
+            const serverCustom: CustomStock[] = data.radarCustomPool;
+            setCustomPool(serverCustom);
+            await AsyncStorage.setItem(CUSTOM_KEY, JSON.stringify(serverCustom));
+            scan(serverCustom);
+          }
+        }
+      } catch {}
     })();
   }, []);
 
   const onRefresh = () => { setRefreshing(true); setScanned(0); scan(); };
+
+  const syncCustomPoolToServer = (pool: CustomStock[]) => {
+    fetch('/api/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ radarCustomPool: pool }),
+    }).catch(() => {});
+  };
 
   const addCustomStock = async () => {
     const symbol = normalize(newSymbol);
@@ -208,6 +229,7 @@ export default function RadarScreen() {
     const next = [...customPool, { symbol, name }];
     setCustomPool(next);
     await AsyncStorage.setItem(CUSTOM_KEY, JSON.stringify(next));
+    syncCustomPoolToServer(next);
     setNewSymbol('');
   };
 
@@ -215,6 +237,7 @@ export default function RadarScreen() {
     const next = customPool.filter(c => c.symbol !== symbol);
     setCustomPool(next);
     await AsyncStorage.setItem(CUSTOM_KEY, JSON.stringify(next));
+    syncCustomPoolToServer(next);
   };
 
   const saveToPortfolio = async () => {

@@ -169,7 +169,7 @@ const SIGNAL_CONFIG: Record<Signal, { emoji: string; label: string; sub: string;
   },
 };
 
-// ── AsyncStorage ──────────────────────────────────────────
+// ── AsyncStorage + Server Sync ────────────────────────────
 async function loadList(): Promise<string[]> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
@@ -178,6 +178,20 @@ async function loadList(): Promise<string[]> {
 }
 async function saveList(symbols: string[]): Promise<void> {
   try { await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(symbols)); } catch {}
+  // 自動推上伺服器，不阻塞
+  fetch('/api/settings', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ watchlist: symbols }),
+  }).catch(() => {});
+}
+async function loadListFromServer(): Promise<string[] | null> {
+  try {
+    const res = await fetch('/api/settings');
+    if (!res.ok) return null;
+    const data = await res.json();
+    return Array.isArray(data.watchlist) && data.watchlist.length > 0 ? data.watchlist : null;
+  } catch { return null; }
 }
 
 // ── API：快速（市場 + 自選股，只抓最新價）────────────────
@@ -330,7 +344,19 @@ export default function App() {
 
   useEffect(() => {
     loadMarket();
-    loadList().then(syms => { setWatchSymbols(syms); watchSymbolsRef.current = syms; loadWatchlist(syms); });
+    loadList().then(async localSyms => {
+      setWatchSymbols(localSyms);
+      watchSymbolsRef.current = localSyms;
+      loadWatchlist(localSyms);
+      // 從伺服器載入，若有資料則覆蓋本機（跨裝置同步）
+      const serverSyms = await loadListFromServer();
+      if (serverSyms) {
+        setWatchSymbols(serverSyms);
+        watchSymbolsRef.current = serverSyms;
+        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(serverSyms));
+        loadWatchlist(serverSyms);
+      }
+    });
     const pollTimer   = setInterval(() => { const o = isMarketOpen(); setMarketOpen(o); if (!o) return; loadMarket(); const s = watchSymbolsRef.current; if (s.length > 0) fetchMultiple(s).then(setWatchStocks); }, POLL_MS);
     const statusTimer = setInterval(() => setMarketOpen(isMarketOpen()), 30_000);
     return () => { clearInterval(pollTimer); clearInterval(statusTimer); };

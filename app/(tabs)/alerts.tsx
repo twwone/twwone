@@ -86,7 +86,6 @@ export default function AlertsScreen() {
     ]);
     if (raw) {
       const loaded: SignalProfile[] = JSON.parse(raw);
-      // 若舊設定檔缺少新欄位，補上預設值
       const migrated = loaded.map(p => ({
         ...p,
         config: { ...DEFAULT_SIGNAL_CONFIG, ...p.config },
@@ -103,6 +102,26 @@ export default function AlertsScreen() {
       await AsyncStorage.setItem(STORAGE_KEY_PROFILES, JSON.stringify([first]));
       await AsyncStorage.setItem(STORAGE_KEY_ACTIVE, first.id);
     }
+    // 從伺服器載入設定檔（跨裝置同步）
+    try {
+      const res = await fetch('/api/settings');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.signalProfiles) && data.signalProfiles.length > 0) {
+          const serverProfiles: SignalProfile[] = data.signalProfiles.map((p: SignalProfile) => ({
+            ...p,
+            config: { ...DEFAULT_SIGNAL_CONFIG, ...p.config },
+          }));
+          setProfiles(serverProfiles);
+          const serverActiveId = data.activeProfileId && serverProfiles.find(p => p.id === data.activeProfileId)
+            ? data.activeProfileId
+            : serverProfiles[0]?.id ?? '';
+          setActiveId(serverActiveId);
+          await AsyncStorage.setItem(STORAGE_KEY_PROFILES, JSON.stringify(serverProfiles));
+          await AsyncStorage.setItem(STORAGE_KEY_ACTIVE, serverActiveId);
+        }
+      }
+    } catch {}
   };
 
   const persistProfiles = async (next: SignalProfile[], nextId?: string) => {
@@ -169,7 +188,7 @@ export default function AlertsScreen() {
       const res = await fetch('/api/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ watchlist, signalConfig: config, portfolio }),
+        body: JSON.stringify({ watchlist, signalConfig: config, portfolio, signalProfiles: profiles, activeProfileId: activeId }),
       });
       if (res.ok) {
         const now = new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' });

@@ -1,9 +1,50 @@
 import Redis from 'ioredis';
+import { calcMA, detectSignals, SignalConfig, DEFAULT_SIGNAL_CONFIG } from '../lib/signals';
 
 const redis = new Redis(process.env.REDIS_URL!, { lazyConnect: true, maxRetriesPerRequest: 2 });
-import { calcMA, detectSignals, SignalConfig } from '../lib/signals';
 
-const YF = 'https://query1.finance.yahoo.com/v8/finance/chart';
+const YF           = 'https://query1.finance.yahoo.com/v8/finance/chart';
+const CHUNK        = 10;
+const POOL_SIZE    = 150;
+const TOP_N        = 20;
+const POOL_KEY     = 'market:pool:v1';
+const TOP_KEY      = 'market:top_signals';
+
+// ── Types ──────────────────────────────────────────────────────────
+
+interface StockData {
+  name:    string;
+  closes:  number[];
+  volumes: number[];
+  highs:   number[];
+  lows:    number[];
+  price:   number;
+}
+
+interface PortfolioItem {
+  symbol:    string;
+  name:      string;
+  lots:      number;
+  costPrice: number;
+}
+
+interface Settings {
+  watchlist:    string[];
+  signalConfig: SignalConfig;
+  portfolio:    PortfolioItem[];
+}
+
+export interface TopSignalItem {
+  symbol:    string;
+  code:      string;
+  name:      string;
+  price:     number;
+  score:     number;
+  signals:   string[];
+  updatedAt: number;
+}
+
+// ── Helpers ────────────────────────────────────────────────────────
 
 function isMarketOpen(): boolean {
   const tw   = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
@@ -13,13 +54,15 @@ function isMarketOpen(): boolean {
   return mins >= 9 * 60 && mins < 13 * 60 + 30;
 }
 
-interface StockData {
-  name:    string;
-  closes:  number[];
-  volumes: number[];
-  highs:   number[];
-  lows:    number[];
-  price:   number;
+async function sendTelegram(text: string): Promise<void> {
+  const token  = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) return;
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+  });
 }
 
 async function fetchStockData(symbol: string): Promise<StockData | null> {
@@ -45,62 +88,16 @@ async function fetchStockData(symbol: string): Promise<StockData | null> {
   } catch { return null; }
 }
 
-async function sendTelegram(text: string): Promise<void> {
-  const token  = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) return;
-  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
-  });
-}
+// ── Mode: fast ─────────────────────────────────────────────────────
 
-interface PortfolioItem {
-  symbol:    string;
-  name:      string;
-  lots:      number;
-  costPrice: number;
-}
-
-interface Settings {
-  watchlist:    string[];
-  signalConfig: SignalConfig;
-  portfolio:    PortfolioItem[];
-}
-
-export default async function handler(req: any, res: any) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret) {
-    const valid =
-      req.headers['authorization'] === `Bearer ${cronSecret}` ||
-      req.query?.key === cronSecret;
-    if (!valid) return res.status(401).json({ error: 'unauthorized' });
-  }
-
-  if (!isMarketOpen()) {
-    return res.json({ skipped: 'market closed', ts: new Date().toISOString() });
-  }
-
-  let settings: Settings | null = null;
-  try {
-    const raw = await redis.get('settings');
-    settings = raw ? JSON.parse(raw) : null;
-  } catch {
-    return res.status(500).json({ error: 'Redis not configured' });
-  }
-
+async function runFastScan(settings: Settings): Promise<string[]> {
   const portfolioMap = new Map<string, PortfolioItem>(
-    (settings?.portfolio ?? []).map(p => [p.symbol, p]),
+    (settings.portfolio ?? []).map(p => [p.symbol, p]),
   );
   const allSymbols = Array.from(new Set([
-    ...(settings?.watchlist ?? []),
+    ...(settings.watchlist ?? []),
     ...portfolioMap.keys(),
   ]));
-
-  if (!allSymbols.length) {
-    return res.json({ skipped: 'no symbols configured' });
-  }
 
   const triggered: string[] = [];
 
@@ -108,18 +105,16 @@ export default async function handler(req: any, res: any) {
     const data = await fetchStockData(symbol);
     if (!data) continue;
 
-    const cfg      = settings?.signalConfig ?? {} as SignalConfig;
-    const signals  = detectSignals(data.closes, data.volumes, data.highs, data.lows, cfg);
-    const holding  = portfolioMap.get(symbol);
-    const shortSym = symbol.replace('.TW', '').replace('.TWO', '');
-    const price    = data.price;
-    const ma20     = calcMA(data.closes, 20);
+    const cfg       = settings.signalConfig ?? {} as SignalConfig;
+    const signals   = detectSignals(data.closes, data.volumes, data.highs, data.lows, cfg);
+    const holding   = portfolioMap.get(symbol);
+    const shortSym  = symbol.replace('.TW', '').replace('.TWO', '');
+    const price     = data.price;
+    const ma20      = calcMA(data.closes, 20);
     const aboveMA20 = price > ma20;
 
     const entrySignals = signals.filter(s => s.category === 'entry');
     const exitSignals  = signals.filter(s => s.category === 'exit');
-
-    // ── 第一層：趨勢過濾 + 第二層：主訊號 + 確認訊號 ─────
 
     // 買進：KD 低檔黃金交叉（主）+ 帶量突破 或 RSI 超賣反彈（確認）+ MA20 上方
     const hasKDEntry      = entrySignals.some(s => s.type === 'kdGoldenCross');
@@ -128,15 +123,14 @@ export default async function handler(req: any, res: any) {
     if (hasKDEntry && hasConfirmEntry && aboveMA20) {
       const coolKey = `direct:buy:${symbol}`;
       if (!await redis.get(coolKey)) {
-        const currentPrice = price;
-        const stopLoss     = (currentPrice * 0.95).toFixed(2);
-        const label        = entrySignals.map(s => s.label).join(' + ');
-        const detail       = entrySignals.map(s => s.detail).join('\n💡 ');
-        const msg = [
+        const stopLoss = (price * 0.95).toFixed(2);
+        const label    = entrySignals.map(s => s.label).join(' + ');
+        const detail   = entrySignals.map(s => s.detail).join('\n💡 ');
+        await sendTelegram([
           `🟢 <b>【多頭進場指令】</b>`,
           `━━━━━━━━━━━━━━`,
           `🎯 <b>標的：</b> ${shortSym} ${data.name}`,
-          `💰 <b>目前市價：</b> ${currentPrice.toLocaleString()} 元`,
+          `💰 <b>目前市價：</b> ${price.toLocaleString()} 元`,
           `📈 <b>觸發條件：</b> ${label}`,
           `💡 <b>指標細節：</b> ${detail}`,
           ``,
@@ -145,15 +139,13 @@ export default async function handler(req: any, res: any) {
           `2. <b>防守：</b> 硬性停損點設為 <b>${stopLoss} 元</b> (跌破無條件離場)。`,
           `━━━━━━━━━━━━━━`,
           `🤖 StockApp 雲端策略引擎`,
-        ].join('\n');
-        await sendTelegram(msg);
+        ].join('\n'));
         await redis.set(coolKey, 1, 'EX', 8 * 60 * 60);
         triggered.push(`${symbol}:buy`);
       }
     }
 
-    // 賣出：KD 高檔死亡交叉（主）+ RSI 超買 或 布林上軌（確認）
-    //       或：股價跌破 MA20 + 任一離場訊號
+    // 賣出：KD 死亡交叉（主）+ RSI 超買 或 布林上軌（確認）/ 跌破 MA20
     const hasKDExit      = exitSignals.some(s => s.type === 'kdDeathCross');
     const hasConfirmExit = exitSignals.some(s => s.type === 'rsiOverbought' || s.type === 'bollingerUpper');
     const sellByKD       = hasKDExit && hasConfirmExit;
@@ -162,18 +154,15 @@ export default async function handler(req: any, res: any) {
     if (sellByKD || sellByMA) {
       const coolKey = `direct:sell:${symbol}`;
       if (!await redis.get(coolKey)) {
-        const currentPrice = price;
-        const label = exitSignals.length
-          ? exitSignals.map(s => s.label).join(' + ')
-          : `跌破 MA20`;
+        const label  = exitSignals.length ? exitSignals.map(s => s.label).join(' + ') : `跌破 MA20`;
         const detail = exitSignals.length
           ? exitSignals.map(s => s.detail).join('\n💡 ')
-          : `股價 ${currentPrice.toLocaleString()} 跌破 MA20 ${ma20.toFixed(2)}`;
-        const msg = [
+          : `股價 ${price.toLocaleString()} 跌破 MA20 ${ma20.toFixed(2)}`;
+        await sendTelegram([
           `🔴 <b>【空頭離場指令】</b>`,
           `━━━━━━━━━━━━━━`,
           `🎯 <b>標的：</b> ${shortSym} ${data.name}`,
-          `💰 <b>目前市價：</b> ${currentPrice.toLocaleString()} 元`,
+          `💰 <b>目前市價：</b> ${price.toLocaleString()} 元`,
           `📉 <b>觸發條件：</b> ${label}`,
           `💡 <b>指標細節：</b> ${detail}`,
           ``,
@@ -182,14 +171,13 @@ export default async function handler(req: any, res: any) {
           `2. <b>狀態：</b> 強制獲利了結或停損，收回現金等待下次訊號。`,
           `━━━━━━━━━━━━━━`,
           `🤖 StockApp 雲端策略引擎`,
-        ].join('\n');
-        await sendTelegram(msg);
+        ].join('\n'));
         await redis.set(coolKey, 1, 'EX', 8 * 60 * 60);
         triggered.push(`${symbol}:sell`);
       }
     }
 
-    // ── 第三層：停損提醒（持有中才檢查，跌破成本 -5%）────
+    // 停損提醒（持有中才檢查，跌破成本 -5%）
     if (holding) {
       const stopLossPrice = holding.costPrice * 0.95;
       if (price < stopLossPrice) {
@@ -211,5 +199,147 @@ export default async function handler(req: any, res: any) {
     }
   }
 
-  res.json({ ok: true, scanned: allSymbols.length, triggered });
+  return triggered;
+}
+
+// ── Mode: full ─────────────────────────────────────────────────────
+
+interface MarketCandidate { code: string; name: string; volume: number; }
+
+async function fetchMarketPool(): Promise<MarketCandidate[]> {
+  const cached = await redis.get(POOL_KEY);
+  if (cached) return JSON.parse(cached);
+
+  const res = await fetch('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL', {
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+  });
+  if (!res.ok) throw new Error('TWSE STOCK_DAY_ALL fetch failed');
+  const data = await res.json() as any[];
+
+  const pool: MarketCandidate[] = data
+    .filter(item => /^\d{4,6}$/.test((item.Code ?? '').trim()))
+    .map(item => ({
+      code:   item.Code.trim(),
+      name:   item.Name.trim(),
+      volume: parseInt((item.TradeVolume ?? '0').replace(/,/g, ''), 10),
+    }))
+    .filter(item => item.volume > 0)
+    .sort((a, b) => b.volume - a.volume)
+    .slice(0, POOL_SIZE);
+
+  await redis.set(POOL_KEY, JSON.stringify(pool), 'EX', 30 * 60);
+  return pool;
+}
+
+// 全市場海選使用全開的進場訊號，離場訊號不影響評分
+const FULL_CONFIG: SignalConfig = {
+  ...DEFAULT_SIGNAL_CONFIG,
+  kdGoldenCross:   { enabled: true, oversoldThreshold: 20 },
+  rsiOversold:     { enabled: true, threshold: 30 },
+  maGoldenCross:   { enabled: true, shortPeriod: 5, longPeriod: 20 },
+  bollingerBounce: { enabled: true, stdDev: 2 },
+  volumeBreak:     { enabled: true, volumeMultiplier: 1.5, breakDays: 5 },
+  macdAboveZero:   { enabled: true },
+  kdDeathCross:    { enabled: false, overboughtThreshold: 80 },
+  rsiOverbought:   { enabled: false, threshold: 70 },
+  maDeathCross:    { enabled: false, shortPeriod: 5, longPeriod: 20 },
+  bollingerUpper:  { enabled: false, stdDev: 2 },
+  macdBelowZero:   { enabled: false },
+};
+
+function scoreStock(data: StockData): { score: number; signalLabels: string[] } {
+  const signals      = detectSignals(data.closes, data.volumes, data.highs, data.lows, FULL_CONFIG);
+  const entrySignals = signals.filter(s => s.category === 'entry');
+  if (entrySignals.length === 0) return { score: 0, signalLabels: [] };
+
+  const ma5     = calcMA(data.closes, 5);
+  const ma20    = calcMA(data.closes, 20);
+  const bullish = data.price > ma5 && ma5 > ma20; // 多頭排列加分
+
+  return {
+    score:        entrySignals.length * 30 + (bullish ? 15 : 0),
+    signalLabels: entrySignals.map(s => s.label),
+  };
+}
+
+async function runFullScan(): Promise<{ poolSize: number; stored: number; top: TopSignalItem[] }> {
+  const pool    = await fetchMarketPool();
+  const results: TopSignalItem[] = [];
+
+  for (let i = 0; i < pool.length; i += CHUNK) {
+    const chunk   = pool.slice(i, i + CHUNK);
+    const fetched = await Promise.all(
+      chunk.map(async ({ code, name }) => {
+        const data = await fetchStockData(`${code}.TW`);
+        if (!data) return null;
+        const { score, signalLabels } = scoreStock(data);
+        if (score === 0) return null;
+        return {
+          symbol:    `${code}.TW`,
+          code,
+          name:      data.name || name,
+          price:     data.price,
+          score,
+          signals:   signalLabels,
+          updatedAt: Date.now(),
+        };
+      }),
+    );
+    for (const item of fetched) {
+      if (item) results.push(item);
+    }
+  }
+
+  const top = results.sort((a, b) => b.score - a.score).slice(0, TOP_N);
+  await redis.set(TOP_KEY, JSON.stringify(top), 'EX', 35 * 60);
+
+  return { poolSize: pool.length, stored: top.length, top };
+}
+
+// ── Handler ────────────────────────────────────────────────────────
+
+export default async function handler(req: any, res: any) {
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret) {
+    const valid =
+      req.headers['authorization'] === `Bearer ${cronSecret}` ||
+      req.query?.key === cronSecret;
+    if (!valid) return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  const mode = (req.query?.mode as string) ?? 'fast';
+  if (mode !== 'fast' && mode !== 'full') {
+    return res.status(400).json({ error: 'invalid mode', valid: ['fast', 'full'] });
+  }
+
+  if (!isMarketOpen()) {
+    return res.json({ skipped: 'market closed', mode, ts: new Date().toISOString() });
+  }
+
+  let settings: Settings | null = null;
+  try {
+    const raw = await redis.get('settings');
+    settings  = raw ? JSON.parse(raw) : null;
+  } catch {
+    return res.status(500).json({ error: 'Redis not configured' });
+  }
+
+  if (mode === 'fast') {
+    if (!settings?.watchlist?.length && !settings?.portfolio?.length) {
+      return res.json({ skipped: 'no symbols configured', mode });
+    }
+    const triggered = await runFastScan(settings!);
+    const scanned   = new Set([
+      ...(settings?.watchlist ?? []),
+      ...(settings?.portfolio?.map(p => p.symbol) ?? []),
+    ]).size;
+    return res.json({ ok: true, mode, scanned, triggered });
+  }
+
+  try {
+    const result = await runFullScan();
+    return res.json({ ok: true, mode, ...result });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message ?? 'full scan failed' });
+  }
 }

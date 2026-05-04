@@ -180,8 +180,8 @@ export default function PortfolioScreen() {
 
   useEffect(() => { loadAll(); getNameMap().then(setNameMap); }, []);
 
-  // ── useSyncData：三合一刷新（60s interval + Tab 焦點 + 手動按鈕）──
-  const { isSyncing, triggerSync } = useSyncData(loadAll);
+  // ── useSyncData：三合一刷新（30s interval + Tab 焦點 + 手動按鈕）──
+  const { isSyncing, triggerSync } = useSyncData(loadAll, 30_000);
 
   // ── 動態設定 Navigation Header 右側刷新按鈕 ──────────────
   const navigation = useNavigation();

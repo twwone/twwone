@@ -381,13 +381,13 @@ export default function App() {
     return () => clearInterval(statusTimer);
   }, []);
 
-  // ── useSyncData：三合一刷新（60s interval + Tab 焦點 + 手動按鈕）──
+  // ── useSyncData：三合一刷新（30s interval + Tab 焦點 + 手動按鈕）──
   const syncAll = useCallback(async (forceRefresh: boolean) => {
     setMarketOpen(isMarketOpen());
     await Promise.all([loadMarket(forceRefresh), silentSyncWatchlist(forceRefresh)]);
   }, [silentSyncWatchlist]);
 
-  const { isSyncing, triggerSync } = useSyncData(syncAll);
+  const { isSyncing, triggerSync } = useSyncData(syncAll, 30_000);
 
   // ── 動態設定 Navigation Header 右側刷新按鈕 ──────────────
   const navigation = useNavigation();

@@ -189,7 +189,7 @@ export default function RadarScreen() {
       <View style={s.header}>
         <Text style={s.headerTitle}>強勢雷達</Text>
         <Text style={s.headerSub}>
-          全市場海選 · 台股成交量前 150 · 每 30 分鐘自動更新
+          全市場海選 · 台股成交量前 100 · 每 30 分鐘自動更新
         </Text>
         <View style={[s.marketBadge, marketOpen ? s.marketBadgeOpen : s.marketBadgeClosed]}>
           <Text style={[s.marketBadgeText, marketOpen ? s.marketBadgeTextOpen : s.marketBadgeTextClosed]}>
@@ -202,7 +202,7 @@ export default function RadarScreen() {
         <View style={s.centered}>
           <ActivityIndicator size="large" color="#F39C12" />
           <Text style={s.loadingTitle}>讀取市場掃描結果中...</Text>
-          <Text style={s.loadingSub}>由後端掃描台股前 150 大成交量標的</Text>
+          <Text style={s.loadingSub}>由後端掃描台股前 100 大成交量標的</Text>
         </View>
       )}
 

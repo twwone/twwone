@@ -272,11 +272,14 @@ const FULL_CONFIG: SignalConfig = {
 function scoreStock(data: StockData): { score: number; signalLabels: string[] } {
   const signals      = detectSignals(data.closes, data.volumes, data.highs, data.lows, FULL_CONFIG);
   const entrySignals = signals.filter(s => s.category === 'entry');
-  if (entrySignals.length === 0) return { score: 0, signalLabels: [] };
 
-  const ma5     = calcMA(data.closes, 5);
-  const ma20    = calcMA(data.closes, 20);
-  const bullish = data.price > ma5 && ma5 > ma20; // 多頭排列加分
+  const ma5  = calcMA(data.closes, 5);
+  const ma20 = calcMA(data.closes, 20);
+
+  if (data.price <= ma20) return { score: 0, signalLabels: [] };
+  if (entrySignals.length < 2) return { score: 0, signalLabels: [] };
+
+  const bullish = data.price > ma5 && ma5 > ma20;
 
   return {
     score:        entrySignals.length * 30 + (bullish ? 15 : 0),

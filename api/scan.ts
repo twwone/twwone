@@ -59,7 +59,7 @@ interface Settings {
 }
 
 function resolveSignalConfig(s: Settings): SignalConfig {
-  if (s.signalConfig) return s.signalConfig;
+  if (s.signalConfig) return { ...DEFAULT_SIGNAL_CONFIG, ...s.signalConfig };
   if (s.signalProfiles?.length) {
     const active = s.signalProfiles.find(p => p.id === s.activeProfileId)
       ?? s.signalProfiles[0];
@@ -107,6 +107,25 @@ async function sendTelegram(text: string): Promise<void> {
   });
 }
 
+async function getTWIndexStatus(): Promise<{ aboveMA20: boolean; price: number; ma20: number }> {
+  try {
+    const res = await fetch(
+      `${YF}/%5ETWII?interval=1d&range=3mo`,
+      { headers: { 'User-Agent': 'Mozilla/5.0' } },
+    );
+    if (!res.ok) return { aboveMA20: true, price: 0, ma20: 0 };
+    const json   = await res.json();
+    const result = json.chart.result[0];
+    const q      = result.indicators.quote[0];
+    const closes = (q.close as (number | null)[]).filter((v): v is number => v !== null && !isNaN(v));
+    const price  = result.meta.regularMarketPrice ?? closes[closes.length - 1] ?? 0;
+    const ma20   = calcMA(closes, 20);
+    return { aboveMA20: price > ma20, price, ma20 };
+  } catch {
+    return { aboveMA20: true, price: 0, ma20: 0 };
+  }
+}
+
 async function fetchStockData(symbol: string): Promise<StockData | null> {
   try {
     const res = await fetch(
@@ -132,7 +151,7 @@ async function fetchStockData(symbol: string): Promise<StockData | null> {
 
 // ── Mode: fast ─────────────────────────────────────────────────────
 
-async function runFastScan(settings: Settings): Promise<string[]> {
+async function runFastScan(settings: Settings, twAboveMA20 = true): Promise<string[]> {
   const portfolioMap = new Map<string, PortfolioItem>(
     (settings.portfolio ?? []).map(p => [p.symbol, p]),
   );
@@ -162,7 +181,7 @@ async function runFastScan(settings: Settings): Promise<string[]> {
     const hasKDEntry      = entrySignals.some(s => s.type === 'kdGoldenCross');
     const hasConfirmEntry = entrySignals.some(s => s.type === 'volumeBreak' || s.type === 'rsiOversold');
 
-    if (hasKDEntry && hasConfirmEntry && aboveMA20) {
+    if (twAboveMA20 && hasKDEntry && hasConfirmEntry && aboveMA20) {
       const coolKey = `direct:buy:${symbol}`;
       if (!await redis.get(coolKey)) {
         const stopLoss = (price * 0.95).toFixed(2);
@@ -312,6 +331,7 @@ const FULL_CONFIG: SignalConfig = {
   bollingerBounce: { enabled: true, stdDev: 2 },
   volumeBreak:     { enabled: true, volumeMultiplier: 1.5, breakDays: 5 },
   macdAboveZero:   { enabled: true },
+  volumePullback:  { enabled: true, maTolerance: 0.015 },
   kdDeathCross:    { enabled: false, overboughtThreshold: 80 },
   rsiOverbought:   { enabled: false, threshold: 70 },
   maDeathCross:    { enabled: false, shortPeriod: 5, longPeriod: 20 },
@@ -364,7 +384,25 @@ async function fetchMarketPool(): Promise<MarketCandidate[]> {
   return pool;
 }
 
-async function runFullScan(): Promise<{ poolSize: number; stored: number; top: TopSignalItem[] }> {
+async function runFullScan(): Promise<{ poolSize: number; stored: number; top: TopSignalItem[]; filtered?: boolean }> {
+  const idxStatus = await getTWIndexStatus();
+  if (!idxStatus.aboveMA20) {
+    const notifKey = 'filter:tw:index:below:ma20';
+    if (!await redis.get(notifKey)) {
+      await sendTelegram([
+        `⚠️ <b>大盤濾網啟動</b>`,
+        ``,
+        `加權指數 ${idxStatus.price.toFixed(0)} 低於月線 ${idxStatus.ma20.toFixed(0)}`,
+        `今日暫停多頭進場海選，保護本金安全`,
+        `出場與停損訊號仍持續監控中`,
+        `━━━━━━━━━━━━━━`,
+        `🤖 StockApp 雲端策略引擎`,
+      ].join('\n'));
+      await redis.set(notifKey, 1, 'EX', 23 * 60 * 60);
+    }
+    return { poolSize: 0, stored: 0, top: [], filtered: true };
+  }
+
   const pool    = await fetchMarketPool();
   const results: TopSignalItem[] = [];
 
@@ -474,7 +512,8 @@ export default async function handler(req: any, res: any) {
       return res.json({ skipped: 'no symbols configured', mode });
     }
     try {
-      const triggered = await runFastScan(settings!);
+      const idxStatus = await getTWIndexStatus();
+      const triggered = await runFastScan(settings!, idxStatus.aboveMA20);
       const scanned   = new Set([
         ...(settings?.watchlist ?? []),
         ...(settings?.portfolio?.map(p => p.symbol) ?? []),

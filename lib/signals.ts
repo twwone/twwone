@@ -7,6 +7,7 @@ export interface SignalConfig {
   bollingerBounce: { enabled: boolean; stdDev: number };
   volumeBreak:     { enabled: boolean; volumeMultiplier: number; breakDays: number };
   macdAboveZero:   { enabled: boolean };
+  volumePullback:  { enabled: boolean; maTolerance: number };
   // 離場
   kdDeathCross:    { enabled: boolean; overboughtThreshold: number };
   rsiOverbought:   { enabled: boolean; threshold: number };
@@ -16,7 +17,7 @@ export interface SignalConfig {
 }
 
 export const ENTRY_SIGNAL_KEYS: (keyof SignalConfig)[] = [
-  'kdGoldenCross', 'rsiOversold', 'maGoldenCross', 'bollingerBounce', 'volumeBreak', 'macdAboveZero',
+  'kdGoldenCross', 'rsiOversold', 'maGoldenCross', 'bollingerBounce', 'volumeBreak', 'macdAboveZero', 'volumePullback',
 ];
 export const EXIT_SIGNAL_KEYS: (keyof SignalConfig)[] = [
   'kdDeathCross', 'rsiOverbought', 'maDeathCross', 'bollingerUpper', 'macdBelowZero',
@@ -29,6 +30,7 @@ export const DEFAULT_SIGNAL_CONFIG: SignalConfig = {
   bollingerBounce: { enabled: false, stdDev: 2 },
   volumeBreak:     { enabled: false, volumeMultiplier: 1.5, breakDays: 5 },
   macdAboveZero:   { enabled: false },
+  volumePullback:  { enabled: false, maTolerance: 0.015 },
   kdDeathCross:    { enabled: false, overboughtThreshold: 80 },
   rsiOverbought:   { enabled: false, threshold: 70 },
   maDeathCross:    { enabled: false, shortPeriod: 5, longPeriod: 20 },
@@ -198,9 +200,34 @@ export function detectSignals(
     }
   }
 
+  // 7. 量縮回踩支撐
+  if (config.volumePullback.enabled && closes.length >= 20 && volumes.length >= 6) {
+    const price    = closes[closes.length - 1];
+    const ma5      = calcMA(closes, 5);
+    const ma10     = calcMA(closes, 10);
+    const ma20     = calcMA(closes, 20);
+    const todayVol = volumes[volumes.length - 1];
+    const avgVol5  = volumes.slice(-6, -1).reduce((a, b) => a + b, 0) / 5;
+    const { maTolerance } = config.volumePullback;
+
+    const bullishAlign = price > ma5 && ma5 > ma20;
+    const nearMA10     = ma10 > 0 && Math.abs(price - ma10) / ma10 <= maTolerance;
+    const volumeShrink = avgVol5 > 0 && todayVol < avgVol5;
+
+    if (bullishAlign && nearMA10 && volumeShrink) {
+      const devPct = ((price - ma10) / ma10 * 100).toFixed(2);
+      out.push({
+        category: 'entry',
+        type:     'volumePullback',
+        label:    '量縮回踩',
+        detail:   `多頭排列，回踩 MA10 ${ma10.toFixed(2)} (偏差 ${devPct}%)，量縮洗盤`,
+      });
+    }
+  }
+
   // ── 離場訊號 ──────────────────────────────────────────
 
-  // 7. KD 高檔死亡交叉
+  // 8. KD 高檔死亡交叉
   if (config.kdDeathCross.enabled && highs.length >= 12) {
     const { k, d } = calcKD(closes, highs, lows);
     if (k.length >= 2 && d.length >= 2) {
@@ -213,7 +240,7 @@ export function detectSignals(
     }
   }
 
-  // 8. RSI 超買回落
+  // 9. RSI 超買回落
   if (config.rsiOverbought.enabled && closes.length > 16) {
     const rsiNow  = calcRSI(closes);
     const rsiPrev = calcRSI(closes.slice(0, -1));
@@ -223,7 +250,7 @@ export function detectSignals(
     }
   }
 
-  // 9. MA 死亡交叉
+  // 10. MA 死亡交叉
   if (config.maDeathCross.enabled) {
     const { shortPeriod: sp, longPeriod: lp } = config.maDeathCross;
     if (closes.length > lp + 1) {
@@ -237,7 +264,7 @@ export function detectSignals(
     }
   }
 
-  // 10. 布林上軌反壓
+  // 11. 布林上軌反壓
   if (config.bollingerUpper.enabled && closes.length >= 22) {
     const bollN = calcBollinger(closes, 20, config.bollingerUpper.stdDev);
     const bollP = calcBollinger(closes.slice(0, -1), 20, config.bollingerUpper.stdDev);
@@ -247,7 +274,7 @@ export function detectSignals(
     }
   }
 
-  // 11. MACD 零軸下方死亡交叉
+  // 12. MACD 零軸下方死亡交叉
   if (config.macdBelowZero.enabled) {
     const { histogram, macd } = calcMACD(closes);
     if (histogram.length >= 2) {

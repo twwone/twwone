@@ -8,7 +8,7 @@ export default async function handler(req: any, res: any) {
   try {
     const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
     const data = await r.json();
-    res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate');
+    res.setHeader('Cache-Control', 's-maxage=15, stale-while-revalidate=15');
     res.json(data);
   } catch {
     res.status(502).json({ error: 'upstream error' });

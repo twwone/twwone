@@ -4,68 +4,53 @@ import { AppState } from 'react-native';
 
 /**
  * 三合一同步 Hook：
- *   1. Tab 切換自動觸發（useFocusEffect，跳過首次掛載）
- *   2. 手動刷新（觸發 triggerSync）
- *   3. 每 intervalMs 毫秒靜默背景更新（AppState 綁定，背景時暫停）
+ *   1. Tab 切換自動觸發（useFocusEffect，跳過首次掛載）→ forceRefresh: false
+ *   2. 手動刷新（triggerSync）→ forceRefresh: true，強制繞過快取
+ *   3. 每 intervalMs 毫秒靜默背景更新（AppState 綁定）→ forceRefresh: false
  *
- * 防禦機制：
- *   - lockRef：全域互斥鎖，防止 Race Condition / 重複點擊
- *   - AppState：app 進背景立即暫停 interval，回前景才恢復計時
- *   - fnRef：永遠呼叫最新版本的 syncFn，防止 stale closure
+ * syncFn 收到 forceRefresh=true 時，應對 /api/stock 加上 Cache-Control: no-cache
  */
-export function useSyncData(syncFn: () => Promise<void>, intervalMs = 60_000) {
-  // ── 永遠保存最新 syncFn，讓 interval callback 不因 stale closure 出問題 ──
+export function useSyncData(syncFn: (forceRefresh: boolean) => Promise<void>, intervalMs = 60_000) {
   const fnRef = useRef(syncFn);
   useEffect(() => { fnRef.current = syncFn; }, [syncFn]);
 
-  // ── 互斥鎖：ref 不觸發 re-render，比 state 更適合當鎖 ──
   const lockRef = useRef(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  const triggerSync = useCallback(async () => {
-    if (lockRef.current) return; // 正在同步中，直接拒絕
+  // 背景靜默同步（不顯示 loading、不強制繞過快取）
+  const silentSync = useCallback(async () => {
+    if (lockRef.current) return;
     lockRef.current = true;
-    setIsSyncing(true);
-    try {
-      await fnRef.current();
-    } finally {
-      lockRef.current = false;
-      setIsSyncing(false);
-    }
+    try { await fnRef.current(false); }
+    finally { lockRef.current = false; }
   }, []);
 
-  // ── AppState-aware interval：背景時停，前景時跑 ──
+  // 手動觸發（顯示 loading、強制繞過快取）
+  const triggerSync = useCallback(async () => {
+    if (lockRef.current) return;
+    lockRef.current = true;
+    setIsSyncing(true);
+    try { await fnRef.current(true); }
+    finally { lockRef.current = false; setIsSyncing(false); }
+  }, []);
+
+  // AppState-aware interval：背景時停，前景時跑
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
-
-    const start = () => {
-      if (timer !== null) return;
-      timer = setInterval(triggerSync, intervalMs);
-    };
-    const stop = () => {
-      if (timer === null) return;
-      clearInterval(timer);
-      timer = null;
-    };
-
-    const sub = AppState.addEventListener('change', state => {
-      if (state === 'active') start();
-      else stop();
-    });
-
-    // 初始化時如果 app 已在前景就立刻啟動
+    const start = () => { if (timer !== null) return; timer = setInterval(silentSync, intervalMs); };
+    const stop  = () => { if (timer === null) return; clearInterval(timer); timer = null; };
+    const sub = AppState.addEventListener('change', state => { if (state === 'active') start(); else stop(); });
     if (AppState.currentState === 'active') start();
-
     return () => { stop(); sub.remove(); };
-  }, [triggerSync, intervalMs]);
+  }, [silentSync, intervalMs]);
 
-  // ── Tab 焦點同步：第一次掛載跳過，之後每次切回都觸發 ──
+  // Tab 焦點同步：第一次掛載跳過，之後每次切回都靜默觸發
   const mounted = useRef(false);
   useFocusEffect(
     useCallback(() => {
       if (!mounted.current) { mounted.current = true; return; }
-      triggerSync();
-    }, [triggerSync]),
+      silentSync();
+    }, [silentSync]),
   );
 
   return { isSyncing, triggerSync };

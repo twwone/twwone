@@ -205,9 +205,10 @@ async function loadListFromServer(): Promise<StoredWatchlist | null> {
 }
 
 // ── API：快速（市場 + 自選股，只抓最新價）────────────────
-async function fetchStock(symbol: string): Promise<StockItem | null> {
+async function fetchStock(symbol: string, forceRefresh = false): Promise<StockItem | null> {
+  const init: RequestInit = forceRefresh ? { headers: { 'Cache-Control': 'no-cache' } } : {};
   try {
-    const res  = await fetch(`${YF}?symbol=${encodeURIComponent(symbol)}`);
+    const res  = await fetch(`${YF}?symbol=${encodeURIComponent(symbol)}`, init);
     if (!res.ok) return null;
     const json = await res.json();
     const m    = json.chart.result[0].meta;
@@ -264,8 +265,8 @@ async function fetchStockWithIndicators(symbol: string): Promise<StockItem | nul
   } catch { return null; }
 }
 
-async function fetchMultiple(symbols: string[]): Promise<StockItem[]> {
-  const results = await Promise.all(symbols.map(fetchStock));
+async function fetchMultiple(symbols: string[], forceRefresh = false): Promise<StockItem[]> {
+  const results = await Promise.all(symbols.map(s => fetchStock(s, forceRefresh)));
   return results.filter((r): r is StockItem => r !== null);
 }
 
@@ -304,12 +305,13 @@ export default function App() {
   const score  = hasIndicators ? [searchResult!.condA, searchResult!.condB, searchResult!.condC].filter(Boolean).length : 0;
 
   // ── 載入市場 ─────────────────────────────────────────
-  const loadMarket = async () => {
+  const loadMarket = async (forceRefresh = false) => {
+    const init: RequestInit = forceRefresh ? { headers: { 'Cache-Control': 'no-cache' } } : {};
     try {
       const [idxRes, twseRes, ...stkRes] = await Promise.all([
-        fetch(`${YF}?symbol=%5ETWII`),
-        fetch(TWSE_MARKET),
-        ...MARKET_STOCKS.map(s => fetch(`${YF}?symbol=${encodeURIComponent(s.symbol)}`)),
+        fetch(`${YF}?symbol=%5ETWII`, init),
+        fetch(TWSE_MARKET, init),
+        ...MARKET_STOCKS.map(s => fetch(`${YF}?symbol=${encodeURIComponent(s.symbol)}`, init)),
       ]);
       const idxJson = await idxRes.json();
       const m   = idxJson.chart.result[0].meta;
@@ -342,21 +344,21 @@ export default function App() {
     finally { setMarketLoading(false); }
   };
 
-  const loadWatchlist = async (symbols?: string[]) => {
+  const loadWatchlist = async (symbols?: string[], forceRefresh = false) => {
     const list = symbols ?? watchSymbols;
     if (list.length > 0) setWatchLoading(true);
-    setWatchStocks(await fetchMultiple(list));
+    setWatchStocks(await fetchMultiple(list, forceRefresh));
     setWatchLoading(false);
   };
 
   // ── 靜默同步：比對 updatedAt，雲端 >= 本地才覆蓋 ─────────
-  const silentSyncWatchlist = useCallback(async () => {
+  const silentSyncWatchlist = useCallback(async (forceRefresh = false) => {
     const [local, server] = await Promise.all([loadList(), loadListFromServer()]);
     if (server && server.updatedAt >= local.updatedAt) {
       setWatchSymbols(server.watchlist);
       watchSymbolsRef.current = server.watchlist;
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(server));
-      loadWatchlist(server.watchlist);
+      loadWatchlist(server.watchlist, forceRefresh);
     }
   }, []);
 
@@ -380,9 +382,9 @@ export default function App() {
   }, []);
 
   // ── useSyncData：三合一刷新（60s interval + Tab 焦點 + 手動按鈕）──
-  const syncAll = useCallback(async () => {
+  const syncAll = useCallback(async (forceRefresh: boolean) => {
     setMarketOpen(isMarketOpen());
-    await Promise.all([loadMarket(), silentSyncWatchlist()]);
+    await Promise.all([loadMarket(forceRefresh), silentSyncWatchlist(forceRefresh)]);
   }, [silentSyncWatchlist]);
 
   const { isSyncing, triggerSync } = useSyncData(syncAll);

@@ -80,9 +80,10 @@ function cathaySellTax(shares: number, price: number, symbol: string): number {
   return Math.round(shares * price * (isETF(symbol) ? 0.001 : 0.003));
 }
 
-async function fetchPrice(symbol: string): Promise<{ price: number; name: string } | null> {
+async function fetchPrice(symbol: string, forceRefresh = false): Promise<{ price: number; name: string } | null> {
+  const init: RequestInit = forceRefresh ? { headers: { 'Cache-Control': 'no-cache' } } : {};
   try {
-    const res  = await fetch(`${YF}?symbol=${encodeURIComponent(symbol)}`);
+    const res  = await fetch(`${YF}?symbol=${encodeURIComponent(symbol)}`, init);
     const json = await res.json();
     const m    = json.chart.result[0].meta;
     return { price: m.regularMarketPrice, name: m.shortName ?? symbol };
@@ -128,9 +129,9 @@ async function fetchServerPortfolio(): Promise<StoredPortfolio | null> {
   } catch { return null; }
 }
 
-async function fetchAllPrices(list: Holding[]): Promise<Record<string, number>> {
+async function fetchAllPrices(list: Holding[], forceRefresh = false): Promise<Record<string, number>> {
   if (!list.length) return {};
-  const results = await Promise.all(list.map(h => fetchPrice(h.symbol)));
+  const results = await Promise.all(list.map(h => fetchPrice(h.symbol, forceRefresh)));
   const map: Record<string, number> = {};
   list.forEach((h, i) => { if (results[i]) map[h.symbol] = results[i]!.price; });
   return map;
@@ -157,12 +158,12 @@ export default function PortfolioScreen() {
     setFSymbol(''); setFType('buy'); setFLots(''); setFUnit('張'); setFCost(''); setFBuyDate('');
   };
 
-  const loadAll = async () => {
+  const loadAll = async (forceRefresh = false) => {
     const local = await loadHoldings();
     setHoldings(local.holdings);
     const [serverData, prices] = await Promise.all([
       fetchServerPortfolio(),
-      fetchAllPrices(local.holdings),
+      fetchAllPrices(local.holdings, forceRefresh),
     ]);
     setPriceMap(prices);
     if (local.updatedAt === 0 && local.holdings.length > 0) {
@@ -171,7 +172,7 @@ export default function PortfolioScreen() {
     if (serverData && serverData.updatedAt >= local.updatedAt) {
       setHoldings(serverData.holdings);
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(serverData));
-      const serverPrices = await fetchAllPrices(serverData.holdings);
+      const serverPrices = await fetchAllPrices(serverData.holdings, forceRefresh);
       setPriceMap(serverPrices);
     }
     setLoading(false);

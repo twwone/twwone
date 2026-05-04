@@ -23,6 +23,8 @@ interface TopSignalItem {
   updatedAt: number;
 }
 
+type Market = 'tw' | 'us';
+
 // ── Score → 視覺等級 ────────────────────────────────────────────────
 
 function scoreLevel(score: number): { label: string; color: string } {
@@ -32,7 +34,7 @@ function scoreLevel(score: number): { label: string; color: string } {
 }
 
 function formatTime(ts: number): string {
-  const d = new Date(ts);
+  const d  = new Date(ts);
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
   return `${hh}:${mm}`;
@@ -46,9 +48,18 @@ function isTWMarketOpen(): boolean {
   return mins >= 9 * 60 && mins < 13 * 60 + 30;
 }
 
+function isUSMarketOpen(): boolean {
+  const et  = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const day = et.getDay();
+  if (day === 0 || day === 6) return false;
+  const mins = et.getHours() * 60 + et.getMinutes();
+  return mins >= 9 * 60 + 30 && mins < 16 * 60;
+}
+
 // ── 主元件 ─────────────────────────────────────────────────────────
 
 export default function RadarScreen() {
+  const [market,     setMarket]     = useState<Market>('tw');
   const [tops,       setTops]       = useState<TopSignalItem[]>([]);
   const [loading,    setLoading]    = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -66,9 +77,9 @@ export default function RadarScreen() {
 
   const initialized = useRef(false);
 
-  const load = useCallback(async (isRefresh = false) => {
+  const load = useCallback(async (m: Market = market) => {
     try {
-      const res = await fetch('/api/market-top', { headers: { 'Cache-Control': 'no-cache' } });
+      const res = await fetch(`/api/market-top?market=${m}`, { headers: { 'Cache-Control': 'no-cache' } });
       if (!res.ok) return;
       const data = await res.json();
       setTops(data.top ?? []);
@@ -78,24 +89,39 @@ export default function RadarScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [market]);
 
   useEffect(() => {
     getNameMap().then(setNameMap);
-    load().then(() => { initialized.current = true; });
+    load('tw').then(() => { initialized.current = true; });
   }, []);
 
   useEffect(() => {
-    const t = setInterval(() => setMarketOpen(isTWMarketOpen()), 60 * 1000);
+    if (!initialized.current) return;
+    setLoading(true);
+    setTops([]);
+    load(market);
+  }, [market]);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      setMarketOpen(market === 'us' ? isUSMarketOpen() : isTWMarketOpen());
+    }, 60 * 1000);
     return () => clearInterval(t);
-  }, []);
+  }, [market]);
 
   useFocusEffect(useCallback(() => {
     if (!initialized.current) return;
-    load(false);
-  }, [load]));
+    load(market);
+  }, [load, market]));
 
-  const onRefresh = () => { setRefreshing(true); load(true); };
+  const onRefresh = () => { setRefreshing(true); load(market); };
+
+  const switchMarket = (m: Market) => {
+    if (m === market) return;
+    setMarket(m);
+    setMarketOpen(m === 'us' ? isUSMarketOpen() : isTWMarketOpen());
+  };
 
   const saveToPortfolio = async () => {
     const lots = parseFloat(pLots);
@@ -115,7 +141,7 @@ export default function RadarScreen() {
       const h: Holding = {
         id: Date.now().toString(),
         symbol: addTarget.symbol,
-        name: resolveName(addTarget.symbol, nameMap, addTarget.name),
+        name: market === 'tw' ? resolveName(addTarget.symbol, nameMap, addTarget.name) : addTarget.name,
         lots, unit: pUnit, costPrice: cost, buyDate: pDate.trim(),
       };
       const next      = [...existing, h];
@@ -139,7 +165,11 @@ export default function RadarScreen() {
   // ── 卡片 ──────────────────────────────────────────────────────────
 
   const renderItem = ({ item, index }: { item: TopSignalItem; index: number }) => {
-    const lv = scoreLevel(item.score);
+    const lv          = scoreLevel(item.score);
+    const displayName = market === 'tw'
+      ? resolveName(item.symbol, nameMap, item.name)
+      : item.name;
+    const priceLabel  = market === 'us' ? 'USD' : '元';
     return (
       <View style={[s.card, { borderColor: lv.color + '44' }]}>
         <View style={s.cardTopRow}>
@@ -157,7 +187,7 @@ export default function RadarScreen() {
         <View style={s.cardBody}>
           <View style={{ flex: 1, gap: 3 }}>
             <Text style={s.cardSymbol}>{item.code}</Text>
-            <Text style={s.cardName}>{resolveName(item.symbol, nameMap, item.name)}</Text>
+            <Text style={s.cardName}>{displayName}</Text>
             <View style={s.signalRow}>
               {item.signals.map(sig => (
                 <View key={sig} style={[s.sigChip, { borderColor: lv.color + '88' }]}>
@@ -168,7 +198,7 @@ export default function RadarScreen() {
           </View>
           <View style={s.cardRight}>
             <Text style={s.cardPrice}>{item.price.toLocaleString()}</Text>
-            <Text style={s.cardPriceLabel}>元</Text>
+            <Text style={s.cardPriceLabel}>{priceLabel}</Text>
           </View>
         </View>
 
@@ -184,16 +214,40 @@ export default function RadarScreen() {
 
   // ── 畫面 ──────────────────────────────────────────────────────────
 
+  const marketLabel = market === 'tw'
+    ? { title: '台股', sub: '成交量前 100 · 每 30 分鐘自動更新', loading: '由後端掃描台股前 100 大成交量標的' }
+    : { title: '美股', sub: '50 大流動性標的 · 每 30 分鐘自動更新', loading: '由後端掃描 50 檔高流動性美股' };
+
+  const openLabel = market === 'tw'
+    ? { open: '🟢 盤中即時掃描', closed: '🔒 已收盤 (顯示今日最終數據)' }
+    : { open: '🟢 美股盤中即時掃描', closed: '🔒 美股已收盤 (顯示今日最終數據)' };
+
   return (
     <SafeAreaView style={s.container}>
       <View style={s.header}>
         <Text style={s.headerTitle}>強勢雷達</Text>
+
+        {/* 市場切換 */}
+        <View style={s.marketToggle}>
+          {(['tw', 'us'] as Market[]).map(m => (
+            <TouchableOpacity
+              key={m}
+              style={[s.marketToggleBtn, market === m && s.marketToggleBtnActive]}
+              onPress={() => switchMarket(m)}
+            >
+              <Text style={[s.marketToggleText, market === m && s.marketToggleTextActive]}>
+                {m === 'tw' ? '🇹🇼 台股' : '🇺🇸 美股'}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
         <Text style={s.headerSub}>
-          全市場海選 · 台股成交量前 100 · 每 30 分鐘自動更新
+          全市場海選 · {marketLabel.sub}
         </Text>
         <View style={[s.marketBadge, marketOpen ? s.marketBadgeOpen : s.marketBadgeClosed]}>
           <Text style={[s.marketBadgeText, marketOpen ? s.marketBadgeTextOpen : s.marketBadgeTextClosed]}>
-            {marketOpen ? '🟢 盤中即時掃描' : '🔒 已收盤 (顯示今日最終數據)'}
+            {marketOpen ? openLabel.open : openLabel.closed}
           </Text>
         </View>
       </View>
@@ -202,7 +256,7 @@ export default function RadarScreen() {
         <View style={s.centered}>
           <ActivityIndicator size="large" color="#F39C12" />
           <Text style={s.loadingTitle}>讀取市場掃描結果中...</Text>
-          <Text style={s.loadingSub}>由後端掃描台股前 100 大成交量標的</Text>
+          <Text style={s.loadingSub}>{marketLabel.loading}</Text>
         </View>
       )}
 
@@ -227,7 +281,7 @@ export default function RadarScreen() {
               <Text style={s.emptyIcon}>📡</Text>
               <Text style={s.emptyTitle}>等待市場掃描</Text>
               <Text style={s.emptySub}>
-                後端每 30 分鐘在台股開盤時自動掃描{'\n'}下拉可手動刷新
+                後端每 30 分鐘在開盤時自動掃描{'\n'}下拉可手動刷新
               </Text>
             </View>
           }
@@ -244,7 +298,7 @@ export default function RadarScreen() {
                 <Text style={s.modalTitle}>加入庫存</Text>
                 {addTarget && (
                   <Text style={s.modalSubtitle}>
-                    {addTarget.symbol.replace('.TW', '')}　·　{resolveName(addTarget.symbol, nameMap, addTarget.name)}
+                    {addTarget.symbol.replace('.TW', '').replace('.TWO', '')}　·　{addTarget.name}
                   </Text>
                 )}
               </View>
@@ -266,8 +320,8 @@ export default function RadarScreen() {
             <TextInput style={s.input} placeholder={pUnit === '張' ? '2' : '100'}
               placeholderTextColor="#3A6A8A" value={pLots} onChangeText={setPLots} keyboardType="numeric" />
 
-            <Text style={s.label}>成本價（每股，元）</Text>
-            <TextInput style={s.input} placeholder="985.00"
+            <Text style={s.label}>成本價（每股，{market === 'us' ? 'USD' : '元'}）</Text>
+            <TextInput style={s.input} placeholder={market === 'us' ? '185.00' : '985.00'}
               placeholderTextColor="#3A6A8A" value={pCost} onChangeText={setPCost} keyboardType="decimal-pad" />
 
             <Text style={s.label}>買進日期（選填）</Text>
@@ -298,6 +352,12 @@ const s = StyleSheet.create({
   header:      { backgroundColor: '#0D1B2A', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: '#1E3A5F' },
   headerTitle: { fontSize: 22, fontWeight: 'bold', color: '#F5F5F5' },
   headerSub:   { fontSize: 12, color: '#4A7FA5', marginTop: 4 },
+
+  marketToggle:         { flexDirection: 'row', marginTop: 10, marginBottom: 2, borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: '#1E3A5F', alignSelf: 'flex-start' },
+  marketToggleBtn:      { paddingHorizontal: 16, paddingVertical: 6, backgroundColor: '#162535' },
+  marketToggleBtnActive:{ backgroundColor: '#1E3A5F' },
+  marketToggleText:     { fontSize: 13, color: '#4A7FA5', fontWeight: '600' },
+  marketToggleTextActive:{ color: '#F5F5F5' },
 
   marketBadge:           { alignSelf: 'flex-start', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4, marginTop: 8, borderWidth: 1 },
   marketBadgeOpen:       { backgroundColor: '#0A2A1A', borderColor: '#27AE60' },
@@ -334,12 +394,12 @@ const s = StyleSheet.create({
   scoreBadge: { marginLeft: 'auto', backgroundColor: '#1E3A5F', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 2 },
   scoreText:  { fontSize: 11, color: '#4A7FA5', fontWeight: '600' },
 
-  cardSymbol:  { fontSize: 17, fontWeight: 'bold', color: '#F5F5F5' },
-  cardName:    { fontSize: 13, color: '#6A9BBF' },
-  signalRow:   { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 6 },
-  sigChip:     { borderWidth: 1, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
-  sigText:     { fontSize: 10, fontWeight: '600' },
-  cardPrice:   { fontSize: 24, fontWeight: 'bold', color: '#F5F5F5' },
+  cardSymbol:     { fontSize: 17, fontWeight: 'bold', color: '#F5F5F5' },
+  cardName:       { fontSize: 13, color: '#6A9BBF' },
+  signalRow:      { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 6 },
+  sigChip:        { borderWidth: 1, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
+  sigText:        { fontSize: 10, fontWeight: '600' },
+  cardPrice:      { fontSize: 24, fontWeight: 'bold', color: '#F5F5F5' },
   cardPriceLabel: { fontSize: 12, color: '#4A7FA5', textAlign: 'right' },
 
   addBtn:     { borderWidth: 1, borderRadius: 10, paddingVertical: 8, alignItems: 'center' },

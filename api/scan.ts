@@ -5,12 +5,26 @@ import { calcMA, detectSignals, SignalConfig, DEFAULT_SIGNAL_CONFIG } from '../l
 
 const redis = new Redis(process.env.REDIS_URL!, { lazyConnect: true, maxRetriesPerRequest: 2 });
 
-const YF           = 'https://query1.finance.yahoo.com/v8/finance/chart';
-const CHUNK        = 5;
-const POOL_SIZE    = 100;
-const TOP_N        = 20;
-const POOL_KEY     = 'market:pool:v1';
-const TOP_KEY      = 'market:top_signals';
+const YF         = 'https://query1.finance.yahoo.com/v8/finance/chart';
+const CHUNK      = 5;
+const POOL_SIZE  = 100;
+const TOP_N      = 20;
+const POOL_KEY   = 'market:pool:v1';
+const TOP_KEY    = 'market:top_signals';
+const US_TOP_KEY = 'market:top_signals:us';
+const RADAR_KEY  = 'market:radar_picks';
+
+const US_POOL = [
+  'NVDA', 'AAPL', 'TSLA', 'AMD',  'AMZN', 'META', 'MSFT', 'GOOGL', 'PLTR', 'INTC',
+  'BAC',  'C',    'WFC',  'JPM',  'GS',   'MS',   'SOFI', 'HOOD',
+  'F',    'AAL',  'DAL',  'UAL',  'RIVN', 'NIO',  'LCID', 'UBER',  'LYFT',
+  'COIN', 'MARA', 'RIOT',
+  'SNAP', 'NFLX', 'DIS',  'PARA',
+  'MU',   'QCOM', 'AVGO', 'TSM',  'ON',   'MRVL',
+  'ORCL', 'CRM',  'ADBE', 'PYPL', 'SQ',   'SHOP',
+  'XOM',  'CVX',
+  'GME',  'AMC',
+];
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -39,9 +53,7 @@ interface SignalProfile {
 interface Settings {
   watchlist:       string[];
   portfolio:       PortfolioItem[];
-  // 舊格式
   signalConfig?:   SignalConfig;
-  // 新格式（alerts.tsx 重構後）
   signalProfiles?: SignalProfile[];
   activeProfileId?: string;
 }
@@ -74,6 +86,14 @@ function isMarketOpen(): boolean {
   if (day === 0 || day === 6) return false;
   const mins = tw.getHours() * 60 + tw.getMinutes();
   return mins >= 9 * 60 && mins < 13 * 60 + 30;
+}
+
+function isUSMarketOpen(): boolean {
+  const et   = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const day  = et.getDay();
+  if (day === 0 || day === 6) return false;
+  const mins = et.getHours() * 60 + et.getMinutes();
+  return mins >= 9 * 60 + 30 && mins < 16 * 60;
 }
 
 async function sendTelegram(text: string): Promise<void> {
@@ -219,6 +239,64 @@ async function runFastScan(settings: Settings): Promise<string[]> {
         }
       }
     }
+
+    // 止盈提醒（持有中才檢查，漲幅達 +10%）
+    if (holding) {
+      const takeProfitPrice = holding.costPrice * 1.10;
+      if (price >= takeProfitPrice) {
+        const coolKey = `takeprofit:${symbol}`;
+        if (!await redis.get(coolKey)) {
+          const gain    = (price - holding.costPrice) * holding.lots * 1000;
+          const gainPct = ((price - holding.costPrice) / holding.costPrice) * 100;
+          await sendTelegram([
+            `🎯 <b>止盈提醒</b>  ·  ${shortSym}`,
+            ``,
+            `<b>${data.name}</b>  現價 ${price.toLocaleString()}`,
+            `已達成本 +10%　成本 ${holding.costPrice.toLocaleString()}`,
+            `獲利約 ${Math.round(gain).toLocaleString()} 元 (+${gainPct.toFixed(2)}%)　持有 ${holding.lots} 張`,
+            ``,
+            `💡 建議考慮減碼或設移動停利保護獲利`,
+          ].join('\n'));
+          await redis.set(coolKey, 1, 'EX', 4 * 60 * 60);
+          triggered.push(`${symbol}:takeprofit`);
+        }
+      }
+    }
+  }
+
+  // 雷達追蹤：監控 full scan 推薦標的的出場訊號
+  const radarRaw   = await redis.get(RADAR_KEY);
+  const radarPicks = radarRaw ? JSON.parse(radarRaw) as string[] : [];
+  const allSet     = new Set(allSymbols);
+  const radarOnly  = radarPicks.filter(s => !allSet.has(s));
+
+  for (const symbol of radarOnly) {
+    const data = await fetchStockData(symbol);
+    if (!data) continue;
+    const cfg      = resolveSignalConfig(settings);
+    const signals  = detectSignals(data.closes, data.volumes, data.highs, data.lows, cfg);
+    const exit     = signals.filter(s => s.category === 'exit');
+    const price    = data.price;
+    const ma20     = calcMA(data.closes, 20);
+    const shortSym = symbol.replace('.TW', '').replace('.TWO', '');
+
+    if (exit.length > 0 || price < ma20) {
+      const coolKey = `radar:exit:${symbol}`;
+      if (!await redis.get(coolKey)) {
+        const reason = price < ma20
+          ? `跌破 MA20 ${ma20.toFixed(2)}`
+          : exit.map(s => s.label).join(' + ');
+        await sendTelegram([
+          `📡 <b>雷達追蹤警示</b>  ·  ${shortSym}`,
+          ``,
+          `<b>${data.name}</b>  現價 ${price.toLocaleString()}`,
+          `⚠️ 強勢條件出現變化：${reason}`,
+          `建議重新評估是否進場或繼續持有`,
+        ].join('\n'));
+        await redis.set(coolKey, 1, 'EX', 8 * 60 * 60);
+        triggered.push(`${symbol}:radar-exit`);
+      }
+    }
   }
 
   return triggered;
@@ -226,34 +304,6 @@ async function runFastScan(settings: Settings): Promise<string[]> {
 
 // ── Mode: full ─────────────────────────────────────────────────────
 
-interface MarketCandidate { code: string; name: string; volume: number; }
-
-async function fetchMarketPool(): Promise<MarketCandidate[]> {
-  const cached = await redis.get(POOL_KEY);
-  if (cached) return JSON.parse(cached);
-
-  const res = await fetch('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL', {
-    headers: { 'User-Agent': 'Mozilla/5.0' },
-  });
-  if (!res.ok) throw new Error('TWSE STOCK_DAY_ALL fetch failed');
-  const data = await res.json() as any[];
-
-  const pool: MarketCandidate[] = data
-    .filter(item => /^\d{4,6}$/.test((item.Code ?? '').trim()))
-    .map(item => ({
-      code:   item.Code.trim(),
-      name:   item.Name.trim(),
-      volume: parseInt((item.TradeVolume ?? '0').replace(/,/g, ''), 10),
-    }))
-    .filter(item => item.volume > 0)
-    .sort((a, b) => b.volume - a.volume)
-    .slice(0, POOL_SIZE);
-
-  await redis.set(POOL_KEY, JSON.stringify(pool), 'EX', 30 * 60);
-  return pool;
-}
-
-// 全市場海選使用全開的進場訊號，離場訊號不影響評分
 const FULL_CONFIG: SignalConfig = {
   ...DEFAULT_SIGNAL_CONFIG,
   kdGoldenCross:   { enabled: true, oversoldThreshold: 20 },
@@ -285,6 +335,33 @@ function scoreStock(data: StockData): { score: number; signalLabels: string[] } 
     score:        entrySignals.length * 30 + (bullish ? 15 : 0),
     signalLabels: entrySignals.map(s => s.label),
   };
+}
+
+interface MarketCandidate { code: string; name: string; volume: number; }
+
+async function fetchMarketPool(): Promise<MarketCandidate[]> {
+  const cached = await redis.get(POOL_KEY);
+  if (cached) return JSON.parse(cached);
+
+  const res = await fetch('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL', {
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+  });
+  if (!res.ok) throw new Error('TWSE STOCK_DAY_ALL fetch failed');
+  const data = await res.json() as any[];
+
+  const pool: MarketCandidate[] = data
+    .filter(item => /^\d{4,6}$/.test((item.Code ?? '').trim()))
+    .map(item => ({
+      code:   item.Code.trim(),
+      name:   item.Name.trim(),
+      volume: parseInt((item.TradeVolume ?? '0').replace(/,/g, ''), 10),
+    }))
+    .filter(item => item.volume > 0)
+    .sort((a, b) => b.volume - a.volume)
+    .slice(0, POOL_SIZE);
+
+  await redis.set(POOL_KEY, JSON.stringify(pool), 'EX', 30 * 60);
+  return pool;
 }
 
 async function runFullScan(): Promise<{ poolSize: number; stored: number; top: TopSignalItem[] }> {
@@ -319,7 +396,45 @@ async function runFullScan(): Promise<{ poolSize: number; stored: number; top: T
   const top = results.sort((a, b) => b.score - a.score).slice(0, TOP_N);
   await redis.set(TOP_KEY, JSON.stringify(top), 'EX', 26 * 60 * 60);
 
+  // 儲存雷達推薦標的供 fast scan 追蹤出場
+  const radarSymbols = top.map(item => item.symbol);
+  await redis.set(RADAR_KEY, JSON.stringify(radarSymbols), 'EX', 26 * 60 * 60);
+
   return { poolSize: pool.length, stored: top.length, top };
+}
+
+async function runFullScanUS(): Promise<{ poolSize: number; stored: number; top: TopSignalItem[] }> {
+  const results: TopSignalItem[] = [];
+
+  for (let i = 0; i < US_POOL.length; i += CHUNK) {
+    const chunk   = US_POOL.slice(i, i + CHUNK);
+    const fetched = await Promise.all(
+      chunk.map(async (code) => {
+        const data = await fetchStockData(code);
+        if (!data) return null;
+        const { score, signalLabels } = scoreStock(data);
+        if (score === 0) return null;
+        return {
+          symbol:    code,
+          code,
+          name:      data.name || code,
+          price:     data.price,
+          score,
+          signals:   signalLabels,
+          updatedAt: Date.now(),
+        };
+      }),
+    );
+    for (const item of fetched) {
+      if (item) results.push(item);
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
+  const top = results.sort((a, b) => b.score - a.score).slice(0, TOP_N);
+  await redis.set(US_TOP_KEY, JSON.stringify(top), 'EX', 26 * 60 * 60);
+
+  return { poolSize: US_POOL.length, stored: top.length, top };
 }
 
 // ── Handler ────────────────────────────────────────────────────────
@@ -333,14 +448,17 @@ export default async function handler(req: any, res: any) {
     if (!valid) return res.status(401).json({ error: 'unauthorized' });
   }
 
-  const mode = (req.query?.mode as string) ?? 'fast';
+  const mode   = (req.query?.mode   as string) ?? 'fast';
+  const market = (req.query?.market as string) ?? 'tw';
+  const force  = req.query?.force === 'true';
+
   if (mode !== 'fast' && mode !== 'full') {
     return res.status(400).json({ error: 'invalid mode', valid: ['fast', 'full'] });
   }
 
-  const force = req.query?.force === 'true';
-  if (!force && !isMarketOpen()) {
-    return res.json({ skipped: 'market closed', mode, ts: new Date().toISOString() });
+  if (!force) {
+    const open = (mode === 'full' && market === 'us') ? isUSMarketOpen() : isMarketOpen();
+    if (!open) return res.json({ skipped: 'market closed', mode, market, ts: new Date().toISOString() });
   }
 
   let settings: Settings | null = null;
@@ -368,8 +486,12 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
+    if (market === 'us') {
+      const result = await runFullScanUS();
+      return res.json({ ok: true, mode, market, ...result });
+    }
     const result = await runFullScan();
-    return res.json({ ok: true, mode, ...result });
+    return res.json({ ok: true, mode, market, ...result });
   } catch (err: any) {
     return res.status(500).json({ error: err?.message ?? 'full scan failed' });
   }

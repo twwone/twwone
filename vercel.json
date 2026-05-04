@@ -1,15 +1,5 @@
 {
   "buildCommand": "expo export -p web",
   "outputDirectory": "dist",
-  "framework": null,
-  "crons": [
-    {
-      "path": "/api/scan?mode=fast",
-      "schedule": "*/10 1-4 * * 1-5"
-    },
-    {
-      "path": "/api/scan?mode=full",
-      "schedule": "0,30 1-4 * * 1-5"
-    }
-  ]
+  "framework": null
 }

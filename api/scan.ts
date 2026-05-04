@@ -277,7 +277,7 @@ function scoreStock(data: StockData): { score: number; signalLabels: string[] } 
   const ma20 = calcMA(data.closes, 20);
 
   if (data.price <= ma20) return { score: 0, signalLabels: [] };
-  if (entrySignals.length < 2) return { score: 0, signalLabels: [] };
+  if (entrySignals.length === 0) return { score: 0, signalLabels: [] };
 
   const bullish = data.price > ma5 && ma5 > ma20;
 

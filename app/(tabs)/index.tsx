@@ -215,7 +215,7 @@ async function fetchStock(symbol: string, forceRefresh = false): Promise<StockIt
     const chg  = m.regularMarketPrice - m.previousClose;
     const map  = await getNameMap();
     const name = resolveName(symbol, map, m.shortName ?? symbol);
-    return { symbol, name, price: m.regularMarketPrice, change: chg, changePct: (chg / m.previousClose) * 100 };
+    return { symbol, name, price: m.regularMarketPrice, change: chg, changePct: m.previousClose ? (chg / m.previousClose) * 100 : 0 };
   } catch { return null; }
 }
 
@@ -259,7 +259,7 @@ async function fetchStockWithIndicators(symbol: string): Promise<StockItem | nul
     const name = resolveName(symbol, map2, m.shortName ?? symbol);
     return {
       symbol, name,
-      price: m.regularMarketPrice, change: chg, changePct: (chg / m.previousClose) * 100,
+      price: m.regularMarketPrice, change: chg, changePct: m.previousClose ? (chg / m.previousClose) * 100 : 0,
       ma5, ma20, rsi, volume: todayVol, vma5, condA, condB, condC,
     };
   } catch { return null; }
@@ -351,14 +351,16 @@ export default function App() {
     setWatchLoading(false);
   };
 
-  // ── 靜默同步：比對 updatedAt，雲端 >= 本地才覆蓋 ─────────
+  // ── 靜默同步：比對 updatedAt，雲端 >= 本地才覆蓋；無論如何都刷新報價 ──
   const silentSyncWatchlist = useCallback(async (forceRefresh = false) => {
     const [local, server] = await Promise.all([loadList(), loadListFromServer()]);
     if (server && server.updatedAt >= local.updatedAt) {
       setWatchSymbols(server.watchlist);
       watchSymbolsRef.current = server.watchlist;
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(server));
-      loadWatchlist(server.watchlist, forceRefresh);
+      await loadWatchlist(server.watchlist, forceRefresh);
+    } else {
+      await loadWatchlist(watchSymbolsRef.current, forceRefresh);
     }
   }, []);
 
@@ -503,7 +505,7 @@ export default function App() {
       <View style={s.statusBar}>
         <View style={[s.statusDot, { backgroundColor: marketOpen ? '#2ECC71' : '#95A5A6' }]} />
         <Text style={s.statusText}>{marketOpen ? '交易中' : '已收盤'}</Text>
-        {marketOpen && <Text style={s.statusSub}>　每 60 秒自動更新</Text>}
+        {marketOpen && <Text style={s.statusSub}>　每 30 秒自動更新</Text>}
         {lastUpdated && <Text style={s.statusUpdated}>　{formatTime(lastUpdated)}</Text>}
       </View>
 

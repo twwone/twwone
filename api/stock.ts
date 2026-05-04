@@ -36,6 +36,9 @@ async function fromMis(symbol: string, misCode: string) {
   const price     = parse(item.z) ?? parse(item.y) ?? 0;
   const prevClose = parse(item.y) ?? 0;
 
+  // 兩個欄位都是 '-'（停牌、尚未開盤、不存在）→ fallback Yahoo
+  if (price === 0) throw new Error('MIS: invalid price');
+
   // 回傳 Yahoo Finance 相容格式，不讓前端改任何一行
   return {
     chart: {

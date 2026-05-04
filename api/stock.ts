@@ -1,12 +1,43 @@
-const YF  = 'https://query1.finance.yahoo.com/v8/finance/chart';
-const MIS = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp';
+const YF     = 'https://query1.finance.yahoo.com/v8/finance/chart';
+const FUGLE  = 'https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote';
 
-// 解析 .TW / .TWO 代號，回傳 MIS 格式（tse_0050.tw）
-function toMisCode(symbol: string): string | null {
-  const m = symbol.match(/^(\w+)\.(TW)(O?)$/i);
-  if (!m) return null;
-  const exchange = m[3] ? 'otc' : 'tse';
-  return `${exchange}_${m[1].toLowerCase()}.tw`;
+// 解析台股代號（2330.TW / 0050.TWO → "2330" / "0050"）
+function toFugleCode(symbol: string): string | null {
+  const m = symbol.match(/^(\w+)\.TWO?$/i);
+  return m ? m[1].toUpperCase() : null;
+}
+
+// Fugle Market Data：台股即時報價（官方 API，不會被擋）
+async function fromFugle(symbol: string, code: string) {
+  const key = process.env.FUGLE_API_KEY;
+  if (!key) throw new Error('Fugle: no API key');
+
+  const r = await fetch(`${FUGLE}/${code}`, {
+    headers: { 'X-API-KEY': key },
+  });
+  if (!r.ok) throw new Error(`Fugle ${r.status}`);
+  const d = await r.json();
+
+  const price     = d.lastPrice ?? d.closePrice ?? 0;
+  const prevClose = d.referencePrice ?? d.previousClose ?? 0;
+  if (!price || !prevClose) throw new Error('Fugle: no price data');
+
+  return {
+    chart: {
+      result: [{
+        meta: {
+          regularMarketPrice:   price,
+          previousClose:        prevClose,
+          shortName:            d.name ?? symbol,
+          regularMarketDayHigh: d.highPrice ?? price,
+          regularMarketDayLow:  d.lowPrice  ?? price,
+        },
+        indicators: { quote: [{}] },
+        timestamp:  [],
+      }],
+      error: null,
+    },
+  };
 }
 
 // Yahoo Finance：歷史 K 線、指標、非台股、fallback
@@ -18,59 +49,17 @@ async function fromYahoo(symbol: string, interval?: string, range?: string) {
   return r.json();
 }
 
-// TWSE MIS：台股即時現價（<1 分鐘延遲）
-async function fromMis(symbol: string, misCode: string) {
-  const url = `${MIS}?ex_ch=${encodeURIComponent(misCode)}&json=1&delay=0`;
-  const r = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      'Referer': 'https://mis.twse.com.tw/stock/index.jsp',
-    },
-  });
-  if (!r.ok) throw new Error(`MIS ${r.status}`);
-  const json = await r.json();
-  const item = json.msgArray?.[0];
-  if (!item) throw new Error('MIS: empty');
-
-  const parse = (v: string) => (v && v !== '-' ? parseFloat(v) : null);
-  const livePrice = parse(item.z);   // null = 無成交（開盤前、停牌、IP被擋）
-  const prevClose = parse(item.y) ?? 0;
-
-  // 沒有即時成交價 → change 必為 0，無意義，直接 fallback Yahoo
-  if (livePrice === null || prevClose === 0) throw new Error('MIS: no live price');
-
-  const price = livePrice;
-
-  // 回傳 Yahoo Finance 相容格式，不讓前端改任何一行
-  return {
-    chart: {
-      result: [{
-        meta: {
-          regularMarketPrice:  price,
-          previousClose:       prevClose,
-          shortName:           item.n ?? symbol,
-          regularMarketDayHigh: parse(item.h) ?? price,
-          regularMarketDayLow:  parse(item.l) ?? price,
-        },
-        indicators: { quote: [{}] },
-        timestamp:  [],
-      }],
-      error: null,
-    },
-  };
-}
-
 export default async function handler(req: any, res: any) {
   const { symbol, interval, range } = req.query;
   if (!symbol) return res.status(400).json({ error: 'symbol required' });
 
-  res.setHeader('Cache-Control', 's-maxage=15, stale-while-revalidate=15');
+  res.setHeader('Cache-Control', 's-maxage=10, stale-while-revalidate=10');
 
-  const misCode    = toMisCode(symbol);
+  const fugleCode   = toFugleCode(symbol);
   const needsHistory = !!(interval && range);
 
   // 歷史資料 或 非台股 → Yahoo Finance
-  if (needsHistory || !misCode) {
+  if (needsHistory || !fugleCode) {
     try {
       return res.json(await fromYahoo(symbol, interval, range));
     } catch {
@@ -78,9 +67,9 @@ export default async function handler(req: any, res: any) {
     }
   }
 
-  // 台股即時現價 → MIS，失敗自動 fallback Yahoo
+  // 台股即時現價 → Fugle，失敗 fallback Yahoo
   try {
-    return res.json(await fromMis(symbol, misCode));
+    return res.json(await fromFugle(symbol, fugleCode));
   } catch {
     try {
       return res.json(await fromYahoo(symbol));

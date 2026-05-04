@@ -2,14 +2,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, FlatList, Modal, RefreshControl,
-  SafeAreaView, StyleSheet, Text, TextInput,
+  ActivityIndicator, Alert, FlatList, RefreshControl,
+  SafeAreaView, StyleSheet, Text,
   TouchableOpacity, View,
 } from 'react-native';
-import { Holding } from './portfolio';
 import { getNameMap, resolveName } from '@/lib/stockNames';
 
-const PORTFOLIO_KEY = '@portfolio_v1';
+const WATCHLIST_KEY = '@watchlist_v1';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -59,23 +58,53 @@ function isUSMarketOpen(): boolean {
 // ── 主元件 ─────────────────────────────────────────────────────────
 
 export default function RadarScreen() {
-  const [market,     setMarket]     = useState<Market>('tw');
-  const [tops,       setTops]       = useState<TopSignalItem[]>([]);
-  const [loading,    setLoading]    = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [updatedAt,  setUpdatedAt]  = useState<number | null>(null);
-  const [nameMap,    setNameMap]    = useState<Record<string, string>>({});
-
-  const [addTarget, setAddTarget] = useState<{ symbol: string; name: string } | null>(null);
-  const [pLots,     setPLots]     = useState('');
-  const [pUnit,     setPUnit]     = useState<'張' | '股'>('張');
-  const [pCost,     setPCost]     = useState('');
-  const [pDate,     setPDate]     = useState('');
-  const [pSaving,   setPSaving]   = useState(false);
-
-  const [marketOpen, setMarketOpen] = useState(isTWMarketOpen());
+  const [market,      setMarket]      = useState<Market>('tw');
+  const [tops,        setTops]        = useState<TopSignalItem[]>([]);
+  const [loading,     setLoading]     = useState(true);
+  const [refreshing,  setRefreshing]  = useState(false);
+  const [updatedAt,   setUpdatedAt]   = useState<number | null>(null);
+  const [nameMap,     setNameMap]     = useState<Record<string, string>>({});
+  const [watchlist,   setWatchlist]   = useState<string[]>([]);
+  const [marketOpen,  setMarketOpen]  = useState(isTWMarketOpen());
 
   const initialized = useRef(false);
+
+  const loadWatchlist = async () => {
+    try {
+      const raw = await AsyncStorage.getItem(WATCHLIST_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      const symbols = Array.isArray(parsed) ? parsed : (parsed.watchlist ?? []);
+      setWatchlist(symbols);
+    } catch {}
+  };
+
+  const addToWatchlist = async (symbol: string, name: string) => {
+    try {
+      const raw = await AsyncStorage.getItem(WATCHLIST_KEY);
+      let symbols: string[] = [];
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        symbols = Array.isArray(parsed) ? parsed : (parsed.watchlist ?? []);
+      }
+      if (symbols.includes(symbol)) {
+        Alert.alert('已在自選股', `${name} 已經在你的自選股中`);
+        return;
+      }
+      const next      = [...symbols, symbol];
+      const updatedAt = Date.now();
+      await AsyncStorage.setItem(WATCHLIST_KEY, JSON.stringify({ watchlist: next, updatedAt }));
+      fetch('/api/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ watchlist: next, watchlistUpdatedAt: updatedAt }),
+      }).catch(() => {});
+      setWatchlist(next);
+      Alert.alert('已加入自選股', `${name} 已加入自選股，系統將開始追蹤`);
+    } catch {
+      Alert.alert('失敗', '請重試');
+    }
+  };
 
   const load = useCallback(async (m: Market = market) => {
     try {
@@ -93,6 +122,7 @@ export default function RadarScreen() {
 
   useEffect(() => {
     getNameMap().then(setNameMap);
+    loadWatchlist();
     load('tw').then(() => { initialized.current = true; });
   }, []);
 
@@ -112,6 +142,7 @@ export default function RadarScreen() {
 
   useFocusEffect(useCallback(() => {
     if (!initialized.current) return;
+    loadWatchlist();
     load(market);
   }, [load, market]));
 
@@ -123,45 +154,6 @@ export default function RadarScreen() {
     setMarketOpen(m === 'us' ? isUSMarketOpen() : isTWMarketOpen());
   };
 
-  const saveToPortfolio = async () => {
-    const lots = parseFloat(pLots);
-    const cost = parseFloat(pCost);
-    if (!addTarget || isNaN(lots) || lots <= 0 || isNaN(cost) || cost <= 0) {
-      Alert.alert('請填寫完整', '數量、成本價為必填');
-      return;
-    }
-    setPSaving(true);
-    try {
-      const raw = await AsyncStorage.getItem(PORTFOLIO_KEY);
-      let existing: Holding[] = [];
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        existing = Array.isArray(parsed) ? parsed : (parsed.holdings ?? []);
-      }
-      const h: Holding = {
-        id: Date.now().toString(),
-        symbol: addTarget.symbol,
-        name: market === 'tw' ? resolveName(addTarget.symbol, nameMap, addTarget.name) : addTarget.name,
-        lots, unit: pUnit, costPrice: cost, buyDate: pDate.trim(),
-      };
-      const next      = [...existing, h];
-      const updatedAt = Date.now();
-      await AsyncStorage.setItem(PORTFOLIO_KEY, JSON.stringify({ holdings: next, updatedAt }));
-      fetch('/api/portfolio', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ holdings: next, updatedAt }),
-      }).catch(() => {});
-      Alert.alert('已加入庫存', `${addTarget.name} 已成功加入持股`);
-      setAddTarget(null);
-      setPLots(''); setPUnit('張'); setPCost(''); setPDate('');
-    } catch {
-      Alert.alert('儲存失敗', '請重試');
-    } finally {
-      setPSaving(false);
-    }
-  };
-
   // ── 卡片 ──────────────────────────────────────────────────────────
 
   const renderItem = ({ item, index }: { item: TopSignalItem; index: number }) => {
@@ -170,6 +162,8 @@ export default function RadarScreen() {
       ? resolveName(item.symbol, nameMap, item.name)
       : item.name;
     const priceLabel  = market === 'us' ? 'USD' : '元';
+    const inWatch     = watchlist.includes(item.symbol);
+
     return (
       <View style={[s.card, { borderColor: lv.color + '44' }]}>
         <View style={s.cardTopRow}>
@@ -203,10 +197,13 @@ export default function RadarScreen() {
         </View>
 
         <TouchableOpacity
-          style={[s.addBtn, { borderColor: lv.color + '66' }]}
-          onPress={() => setAddTarget({ symbol: item.symbol, name: item.name })}
+          style={[s.addBtn, { borderColor: inWatch ? '#2C4F6B' : lv.color + '66' }]}
+          onPress={() => addToWatchlist(item.symbol, displayName)}
+          disabled={inWatch}
         >
-          <Text style={[s.addBtnText, { color: lv.color }]}>＋ 加入庫存</Text>
+          <Text style={[s.addBtnText, { color: inWatch ? '#2C4F6B' : lv.color }]}>
+            {inWatch ? '✓ 已在自選股' : '＋ 加入自選股'}
+          </Text>
         </TouchableOpacity>
       </View>
     );
@@ -215,8 +212,8 @@ export default function RadarScreen() {
   // ── 畫面 ──────────────────────────────────────────────────────────
 
   const marketLabel = market === 'tw'
-    ? { title: '台股', sub: '成交量前 100 · 每 30 分鐘自動更新', loading: '由後端掃描台股前 100 大成交量標的' }
-    : { title: '美股', sub: '50 大流動性標的 · 每 30 分鐘自動更新', loading: '由後端掃描 50 檔高流動性美股' };
+    ? { sub: '成交量前 100 · 每 30 分鐘自動更新', loading: '由後端掃描台股前 100 大成交量標的' }
+    : { sub: '50 大流動性標的 · 每 30 分鐘自動更新', loading: '由後端掃描 50 檔高流動性美股' };
 
   const openLabel = market === 'tw'
     ? { open: '🟢 盤中即時掃描', closed: '🔒 已收盤 (顯示今日最終數據)' }
@@ -227,7 +224,6 @@ export default function RadarScreen() {
       <View style={s.header}>
         <Text style={s.headerTitle}>強勢雷達</Text>
 
-        {/* 市場切換 */}
         <View style={s.marketToggle}>
           {(['tw', 'us'] as Market[]).map(m => (
             <TouchableOpacity
@@ -242,9 +238,7 @@ export default function RadarScreen() {
           ))}
         </View>
 
-        <Text style={s.headerSub}>
-          全市場海選 · {marketLabel.sub}
-        </Text>
+        <Text style={s.headerSub}>全市場海選 · {marketLabel.sub}</Text>
         <View style={[s.marketBadge, marketOpen ? s.marketBadgeOpen : s.marketBadgeClosed]}>
           <Text style={[s.marketBadgeText, marketOpen ? s.marketBadgeTextOpen : s.marketBadgeTextClosed]}>
             {marketOpen ? openLabel.open : openLabel.closed}
@@ -288,59 +282,6 @@ export default function RadarScreen() {
           renderItem={renderItem}
         />
       )}
-
-      {/* ── 加入庫存 Modal ── */}
-      <Modal visible={addTarget !== null} animationType="slide" transparent onRequestClose={() => setAddTarget(null)}>
-        <View style={s.overlay}>
-          <View style={s.modalBox}>
-            <View style={s.modalHeader}>
-              <View style={{ flex: 1 }}>
-                <Text style={s.modalTitle}>加入庫存</Text>
-                {addTarget && (
-                  <Text style={s.modalSubtitle}>
-                    {addTarget.symbol.replace('.TW', '').replace('.TWO', '')}　·　{addTarget.name}
-                  </Text>
-                )}
-              </View>
-              <TouchableOpacity onPress={() => setAddTarget(null)}>
-                <Text style={s.modalClose}>✕</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={s.labelRow}>
-              <Text style={s.label}>數量</Text>
-              <View style={s.unitToggle}>
-                {(['張', '股'] as const).map(u => (
-                  <TouchableOpacity key={u} style={[s.unitBtn, pUnit === u && s.unitBtnActive]} onPress={() => setPUnit(u)}>
-                    <Text style={[s.unitBtnText, pUnit === u && s.unitBtnTextActive]}>{u}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-            <TextInput style={s.input} placeholder={pUnit === '張' ? '2' : '100'}
-              placeholderTextColor="#3A6A8A" value={pLots} onChangeText={setPLots} keyboardType="numeric" />
-
-            <Text style={s.label}>成本價（每股，{market === 'us' ? 'USD' : '元'}）</Text>
-            <TextInput style={s.input} placeholder={market === 'us' ? '185.00' : '985.00'}
-              placeholderTextColor="#3A6A8A" value={pCost} onChangeText={setPCost} keyboardType="decimal-pad" />
-
-            <Text style={s.label}>買進日期（選填）</Text>
-            <TextInput style={s.input} placeholder="2026-04-15"
-              placeholderTextColor="#3A6A8A" value={pDate} onChangeText={setPDate} />
-
-            <TouchableOpacity
-              style={[s.confirmBtn, pSaving && { opacity: 0.5 }]}
-              onPress={saveToPortfolio}
-              disabled={pSaving}
-            >
-              {pSaving
-                ? <ActivityIndicator size="small" color="#0D1B2A" />
-                : <Text style={s.confirmBtnText}>確認加入庫存</Text>
-              }
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -353,10 +294,10 @@ const s = StyleSheet.create({
   headerTitle: { fontSize: 22, fontWeight: 'bold', color: '#F5F5F5' },
   headerSub:   { fontSize: 12, color: '#4A7FA5', marginTop: 4 },
 
-  marketToggle:         { flexDirection: 'row', marginTop: 10, marginBottom: 2, borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: '#1E3A5F', alignSelf: 'flex-start' },
-  marketToggleBtn:      { paddingHorizontal: 16, paddingVertical: 6, backgroundColor: '#162535' },
-  marketToggleBtnActive:{ backgroundColor: '#1E3A5F' },
-  marketToggleText:     { fontSize: 13, color: '#4A7FA5', fontWeight: '600' },
+  marketToggle:          { flexDirection: 'row', marginTop: 10, marginBottom: 2, borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: '#1E3A5F', alignSelf: 'flex-start' },
+  marketToggleBtn:       { paddingHorizontal: 16, paddingVertical: 6, backgroundColor: '#162535' },
+  marketToggleBtnActive: { backgroundColor: '#1E3A5F' },
+  marketToggleText:      { fontSize: 13, color: '#4A7FA5', fontWeight: '600' },
   marketToggleTextActive:{ color: '#F5F5F5' },
 
   marketBadge:           { alignSelf: 'flex-start', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4, marginTop: 8, borderWidth: 1 },
@@ -404,21 +345,4 @@ const s = StyleSheet.create({
 
   addBtn:     { borderWidth: 1, borderRadius: 10, paddingVertical: 8, alignItems: 'center' },
   addBtnText: { fontSize: 13, fontWeight: '700' },
-
-  overlay:       { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
-  modalBox:      { backgroundColor: '#0D1B2A', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, gap: 8, borderTopWidth: 1, borderColor: '#1E3A5F' },
-  modalHeader:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  modalTitle:    { fontSize: 18, fontWeight: 'bold', color: '#F5F5F5' },
-  modalSubtitle: { fontSize: 12, color: '#4A7FA5', marginTop: 2 },
-  modalClose:    { fontSize: 18, color: '#4A7FA5', fontWeight: 'bold' },
-  label:         { fontSize: 13, color: '#4A7FA5', fontWeight: '600', marginTop: 4 },
-  labelRow:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 },
-  unitToggle:    { flexDirection: 'row', borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: '#F39C12' },
-  unitBtn:       { paddingHorizontal: 14, paddingVertical: 4, backgroundColor: '#162535' },
-  unitBtnActive: { backgroundColor: '#F39C12' },
-  unitBtnText:   { fontSize: 13, color: '#F39C12', fontWeight: '600' },
-  unitBtnTextActive: { color: '#0D1B2A' },
-  input:         { backgroundColor: '#162535', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, color: '#F5F5F5', borderWidth: 1, borderColor: '#1E3A5F' },
-  confirmBtn:    { backgroundColor: '#F39C12', borderRadius: 12, paddingVertical: 15, alignItems: 'center', marginTop: 8 },
-  confirmBtnText:{ color: '#0D1B2A', fontSize: 16, fontWeight: 'bold' },
 });

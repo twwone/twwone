@@ -1,4 +1,4 @@
-export const maxDuration = 60;
+export const maxDuration = 90;
 
 import Redis from 'ioredis';
 import { calcMA, detectSignals, SignalConfig, DEFAULT_SIGNAL_CONFIG } from '../lib/signals';
@@ -7,7 +7,7 @@ const redis = new Redis(process.env.REDIS_URL!, { lazyConnect: true, maxRetriesP
 
 const YF           = 'https://query1.finance.yahoo.com/v8/finance/chart';
 const CHUNK        = 5;
-const POOL_SIZE    = 30;
+const POOL_SIZE    = 100;
 const TOP_N        = 20;
 const POOL_KEY     = 'market:pool:v1';
 const TOP_KEY      = 'market:top_signals';

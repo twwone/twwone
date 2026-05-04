@@ -30,10 +30,30 @@ interface PortfolioItem {
   costPrice: number;
 }
 
+interface SignalProfile {
+  id:     string;
+  name:   string;
+  config: SignalConfig;
+}
+
 interface Settings {
-  watchlist:    string[];
-  signalConfig: SignalConfig;
-  portfolio:    PortfolioItem[];
+  watchlist:       string[];
+  portfolio:       PortfolioItem[];
+  // 舊格式
+  signalConfig?:   SignalConfig;
+  // 新格式（alerts.tsx 重構後）
+  signalProfiles?: SignalProfile[];
+  activeProfileId?: string;
+}
+
+function resolveSignalConfig(s: Settings): SignalConfig {
+  if (s.signalConfig) return s.signalConfig;
+  if (s.signalProfiles?.length) {
+    const active = s.signalProfiles.find(p => p.id === s.activeProfileId)
+      ?? s.signalProfiles[0];
+    return { ...DEFAULT_SIGNAL_CONFIG, ...active.config };
+  }
+  return DEFAULT_SIGNAL_CONFIG;
 }
 
 export interface TopSignalItem {
@@ -107,7 +127,7 @@ async function runFastScan(settings: Settings): Promise<string[]> {
     const data = await fetchStockData(symbol);
     if (!data) continue;
 
-    const cfg       = settings.signalConfig ?? {} as SignalConfig;
+    const cfg       = resolveSignalConfig(settings);
     const signals   = detectSignals(data.closes, data.volumes, data.highs, data.lows, cfg);
     const holding   = portfolioMap.get(symbol);
     const shortSym  = symbol.replace('.TW', '').replace('.TWO', '');
@@ -332,12 +352,16 @@ export default async function handler(req: any, res: any) {
     if (!settings?.watchlist?.length && !settings?.portfolio?.length) {
       return res.json({ skipped: 'no symbols configured', mode });
     }
-    const triggered = await runFastScan(settings!);
-    const scanned   = new Set([
-      ...(settings?.watchlist ?? []),
-      ...(settings?.portfolio?.map(p => p.symbol) ?? []),
-    ]).size;
-    return res.json({ ok: true, mode, scanned, triggered });
+    try {
+      const triggered = await runFastScan(settings!);
+      const scanned   = new Set([
+        ...(settings?.watchlist ?? []),
+        ...(settings?.portfolio?.map(p => p.symbol) ?? []),
+      ]).size;
+      return res.json({ ok: true, mode, scanned, triggered });
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message ?? 'fast scan failed' });
+    }
   }
 
   try {

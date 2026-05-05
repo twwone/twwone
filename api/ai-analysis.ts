@@ -103,7 +103,10 @@ export default async function handler(req: any, res: any) {
     }
   );
 
-  if (!geminiRes.ok) return res.status(502).json({ error: 'Gemini API error' });
+  if (!geminiRes.ok) {
+    const errBody = await geminiRes.text();
+    return res.status(502).json({ error: 'Gemini API error', status: geminiRes.status, detail: errBody.slice(0, 300) });
+  }
   const gj   = await geminiRes.json();
   const text = gj.candidates?.[0]?.content?.parts?.[0]?.text ?? '分析失敗，請稍後再試';
 

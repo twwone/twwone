@@ -92,7 +92,7 @@ export default async function handler(req: any, res: any) {
 【短期目標價】給出合理目標價區間`;
 
   const geminiRes = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

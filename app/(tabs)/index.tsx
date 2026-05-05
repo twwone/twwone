@@ -292,6 +292,9 @@ export default function App() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [marketOpen,  setMarketOpen]  = useState(isMarketOpen());
   const [selectedStock, setSelectedStock] = useState<StockItem | null>(null);
+  const [aiText,        setAiText]        = useState<string | null>(null);
+  const [aiLoading,     setAiLoading]     = useState(false);
+  const [aiError,       setAiError]       = useState<string | null>(null);
 
   const watchSymbolsRef = useRef<string[]>([]);
   useEffect(() => { watchSymbolsRef.current = watchSymbols; }, [watchSymbols]);
@@ -470,11 +473,15 @@ export default function App() {
     <View style={s.container}>
 
       {/* K 線 Modal */}
-      <Modal visible={!!selectedStock} animationType="slide" onRequestClose={() => setSelectedStock(null)}>
+      <Modal visible={!!selectedStock} animationType="slide" onRequestClose={() => {
+        setSelectedStock(null); setAiText(null); setAiError(null);
+      }}>
         <SafeAreaView style={s.modalWrap}>
           <ScrollView>
             <View style={s.modalHeader}>
-              <TouchableOpacity style={s.modalClose} onPress={() => setSelectedStock(null)}>
+              <TouchableOpacity style={s.modalClose} onPress={() => {
+                setSelectedStock(null); setAiText(null); setAiError(null);
+              }}>
                 <Text style={s.modalCloseTxt}>✕</Text>
               </TouchableOpacity>
             </View>
@@ -488,6 +495,60 @@ export default function App() {
               </Text>
             </View>
             {selectedStock && <KLineChart symbol={selectedStock.symbol} />}
+
+            {/* AI 分析區塊 */}
+            <View style={s.aiWrap}>
+              {!aiText && !aiLoading && (
+                <TouchableOpacity
+                  style={s.aiBtn}
+                  onPress={async () => {
+                    if (!selectedStock) return;
+                    setAiLoading(true); setAiText(null); setAiError(null);
+                    try {
+                      const res = await fetch(`/api/ai-analysis?symbol=${encodeURIComponent(selectedStock.symbol)}`);
+                      const json = await res.json();
+                      if (json.analysis) setAiText(json.analysis);
+                      else setAiError('分析失敗，請稍後再試');
+                    } catch {
+                      setAiError('連線失敗，請稍後再試');
+                    }
+                    setAiLoading(false);
+                  }}
+                >
+                  <Text style={s.aiBtnText}>✨ AI 智能分析</Text>
+                </TouchableOpacity>
+              )}
+
+              {aiLoading && (
+                <View style={s.aiLoading}>
+                  <ActivityIndicator color="#BF5AF2" />
+                  <Text style={s.aiLoadingText}>AI 分析中，請稍候...</Text>
+                </View>
+              )}
+
+              {aiError && (
+                <Text style={s.aiError}>{aiError}</Text>
+              )}
+
+              {aiText && (
+                <View style={s.aiCard}>
+                  <Text style={s.aiCardTitle}>✨ AI 智能分析</Text>
+                  <Text style={s.aiCardSub}>由 Gemini 根據技術指標生成，僅供參考</Text>
+                  <View style={s.aiDivider} />
+                  {aiText.split('\n').filter(l => l.trim()).map((line, i) => {
+                    const isHeader = line.startsWith('【');
+                    return (
+                      <Text key={i} style={isHeader ? s.aiLine : s.aiLineSub}>
+                        {line}
+                      </Text>
+                    );
+                  })}
+                  <TouchableOpacity onPress={() => { setAiText(null); setAiError(null); }} style={s.aiResetBtn}>
+                    <Text style={s.aiResetTxt}>重新分析</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
           </ScrollView>
         </SafeAreaView>
       </Modal>
@@ -835,4 +896,20 @@ const s = StyleSheet.create({
   signalScore: { fontSize: 13, fontWeight: '600' },
   signalMain:  { fontSize: 24, fontWeight: 'bold', textAlign: 'center' },
   signalSub:   { fontSize: 13, textAlign: 'center', opacity: 0.85 },
+
+  // AI 分析
+  aiWrap:       { padding: 16, paddingTop: 0, paddingBottom: 32 },
+  aiBtn:        { backgroundColor: '#2D1B69', borderRadius: 14, paddingVertical: 16, alignItems: 'center', borderWidth: 1, borderColor: '#BF5AF2' },
+  aiBtnText:    { color: '#BF5AF2', fontSize: 16, fontWeight: 'bold', letterSpacing: 0.5 },
+  aiLoading:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 20 },
+  aiLoadingText:{ color: '#BF5AF2', fontSize: 14 },
+  aiError:      { color: '#FF6B6B', textAlign: 'center', paddingVertical: 16, fontSize: 13 },
+  aiCard:       { backgroundColor: '#1A0A2E', borderRadius: 16, padding: 18, borderWidth: 1, borderColor: '#3D1F6B', gap: 8 },
+  aiCardTitle:  { fontSize: 16, fontWeight: 'bold', color: '#BF5AF2' },
+  aiCardSub:    { fontSize: 11, color: '#666' },
+  aiDivider:    { height: 1, backgroundColor: '#2D1B69', marginVertical: 4 },
+  aiLine:       { fontSize: 14, color: '#E8E8FF', fontWeight: '600', marginTop: 4 },
+  aiLineSub:    { fontSize: 13, color: '#BBB', marginLeft: 4, lineHeight: 20 },
+  aiResetBtn:   { marginTop: 8, alignSelf: 'flex-end' },
+  aiResetTxt:   { fontSize: 12, color: '#666' },
 });

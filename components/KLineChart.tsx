@@ -127,7 +127,7 @@ export default function KLineChart({ symbol }: { symbol: string }) {
       .catch(() => { setErr('資料載入失敗'); setBusy(false); });
   }, [symbol, pi]);
 
-  const isIntra = pi <= 1;
+  const isIntra = pi === 0;
 
   const chart = useMemo(() => {
     if (pts.length < 2) return null;
@@ -175,8 +175,11 @@ export default function KLineChart({ symbol }: { symbol: string }) {
   };
 
   const panResponder = useRef(PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onMoveShouldSetPanResponder:  () => true,
+    onStartShouldSetPanResponder:        () => true,
+    onStartShouldSetPanResponderCapture: () => true,
+    onMoveShouldSetPanResponder:         () => true,
+    onMoveShouldSetPanResponderCapture:  () => true,
+    onPanResponderTerminationRequest:    () => false,
     onPanResponderGrant:     (e) => touchRef.current(e.nativeEvent.locationX),
     onPanResponderMove:      (e) => touchRef.current(e.nativeEvent.locationX),
     onPanResponderRelease:   () => setCrossIdx(null),

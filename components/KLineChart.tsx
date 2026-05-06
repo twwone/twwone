@@ -284,11 +284,11 @@ export default function KLineChart({ symbol }: { symbol: string }) {
               ) : null
             ))}
 
-            {/* MA labels at line ends */}
+            {/* MA labels in Y-axis area */}
             {chart.mas.map(ma => ma.lastVal != null ? (
               <SvgText key={`maLbl${ma.period}`}
-                x={W - Y_W - 4} y={chart.toY(ma.lastVal) + 4}
-                fontSize={9} fill={ma.color} textAnchor="end">
+                x={W - Y_W + 4} y={chart.toY(ma.lastVal) + 4}
+                fontSize={9} fill={ma.color} textAnchor="start">
                 MA{ma.period}
               </SvgText>
             ) : null)}

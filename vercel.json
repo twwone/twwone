@@ -1,8 +1,5 @@
 {
   "buildCommand": "expo export -p web",
   "outputDirectory": "dist",
-  "framework": null,
-  "crons": [
-    { "path": "/api/check-price-alerts", "schedule": "*/5 * * * *" }
-  ]
+  "framework": null
 }

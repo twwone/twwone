@@ -67,7 +67,23 @@ export default async function handler(req: any, res: any) {
 
   const volStr = vma5 > 0 ? `今日量為5日均量的 ${(todayVol / vma5 * 100).toFixed(0)}%` : '量能資料不足';
 
-  const prompt = `你是專業股票技術分析師，根據以下技術數據給出操作建議，請用繁體中文回答。
+  // 抓最新新聞標題
+  let newsStr = '無法取得近期新聞';
+  try {
+    const newsRes = await fetch(
+      `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&newsCount=5&enableFuzzyQuery=false`,
+      { headers: { 'User-Agent': 'Mozilla/5.0' } }
+    );
+    if (newsRes.ok) {
+      const newsJson = await newsRes.json();
+      const items: { title: string }[] = newsJson.news ?? [];
+      if (items.length > 0) {
+        newsStr = items.slice(0, 5).map((n, i) => `${i + 1}. ${n.title}`).join('\n');
+      }
+    }
+  } catch { /* 新聞抓失敗不影響主流程 */ }
+
+  const prompt = `你是專業股票技術分析師，根據以下技術數據與近期新聞給出操作建議，請用繁體中文回答。
 
 股票：${m.shortName ?? symbol}（${symbol}）
 當前價格：${price.toFixed(2)}
@@ -84,12 +100,16 @@ export default async function handler(req: any, res: any) {
 - 成交量動能：${volStr}
 - 近10日收盤：${recent10}
 
+近期新聞（僅供基本面參考）：
+${newsStr}
+
 請按照以下格式回答，不要加其他內容：
 【操作建議】買進 / 觀望 / 賣出（只選一個）
 【信心程度】高 / 中 / 低
-【理由】2-3句說明主要原因
+【理由】2-3句說明主要原因（可結合新聞與技術面）
 【風險提示】1句提醒主要風險
-【短期目標價】給出合理目標價區間`;
+【短期目標價】給出合理目標價區間
+【脫離價格】跌破此價位應停損離場（給出具體價格）`;
 
   const groqRes = await fetch(
     'https://api.groq.com/openai/v1/chat/completions',
@@ -100,7 +120,7 @@ export default async function handler(req: any, res: any) {
         model: 'llama-3.3-70b-versatile',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.3,
-        max_tokens: 400,
+        max_tokens: 600,
       }),
     }
   );

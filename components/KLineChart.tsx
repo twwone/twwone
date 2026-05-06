@@ -157,7 +157,11 @@ export default function KLineChart({ symbol }: { symbol: string }) {
     const slotW   = innerW / pts.length;
     const candleW = Math.max(slotW * 0.7, 1);
 
-    const mas  = MA_CFGS.map(cfg => ({ ...cfg, path: buildPath(calcMA(pts, cfg.period), toX, toY) }));
+    const mas  = MA_CFGS.map(cfg => {
+      const vals = calcMA(pts, cfg.period);
+      const lastVal = [...vals].reverse().find(v => v != null) ?? null;
+      return { ...cfg, path: buildPath(vals, toX, toY), lastVal };
+    });
 
     const vols   = pts.map(p => p.volume);
     const volMax = Math.max(...vols) || 1;
@@ -279,6 +283,15 @@ export default function KLineChart({ symbol }: { symbol: string }) {
                   fill="none" stroke={ma.color} strokeWidth={1.2} />
               ) : null
             ))}
+
+            {/* MA labels at line ends */}
+            {chart.mas.map(ma => ma.lastVal != null ? (
+              <SvgText key={`maLbl${ma.period}`}
+                x={W - Y_W - 4} y={chart.toY(ma.lastVal) + 4}
+                fontSize={9} fill={ma.color} textAnchor="end">
+                MA{ma.period}
+              </SvgText>
+            ) : null)}
 
             {/* Y-axis labels */}
             {chart.yLabels.map((v, i) => (

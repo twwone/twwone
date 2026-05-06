@@ -505,7 +505,28 @@ export default function App() {
                     if (!selectedStock) return;
                     setAiLoading(true); setAiText(null); setAiError(null);
                     try {
-                      const res = await fetch(`/api/ai-analysis?symbol=${encodeURIComponent(selectedStock.symbol)}`);
+                      // 從庫存找該股均買價
+                      let portfolioParams = '';
+                      try {
+                        const raw = await AsyncStorage.getItem('@portfolio_v1');
+                        if (raw) {
+                          const { holdings } = JSON.parse(raw) as { holdings: { symbol: string; lots: number; unit?: string; costPrice: number; type?: string }[] };
+                          const sym = selectedStock.symbol;
+                          const buyTx  = holdings.filter(h => h.symbol === sym && h.type !== 'sell');
+                          const sellTx = holdings.filter(h => h.symbol === sym && h.type === 'sell');
+                          const toSh   = (h: { lots: number; unit?: string }) => h.lots * ((h.unit ?? '張') === '張' ? 1000 : 1);
+                          const totalBuyShares = buyTx.reduce((a, h) => a + toSh(h), 0);
+                          const totalBuyCost   = buyTx.reduce((a, h) => a + toSh(h) * h.costPrice, 0);
+                          const totalSellShares = sellTx.reduce((a, h) => a + toSh(h), 0);
+                          const netShares = totalBuyShares - totalSellShares;
+                          if (netShares > 0 && totalBuyShares > 0) {
+                            const avgCost = totalBuyCost / totalBuyShares;
+                            portfolioParams = `&avgCost=${avgCost.toFixed(2)}&netShares=${netShares}`;
+                          }
+                        }
+                      } catch { /* 庫存讀取失敗不影響主流程 */ }
+
+                      const res = await fetch(`/api/ai-analysis?symbol=${encodeURIComponent(selectedStock.symbol)}${portfolioParams}`);
                       const json = await res.json();
                       if (json.analysis) setAiText(json.analysis);
                       else setAiError('分析失敗，請稍後再試');

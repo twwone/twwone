@@ -24,8 +24,11 @@ function calcRSI(closes: number[], period = 14): number {
 }
 
 export default async function handler(req: any, res: any) {
-  const { symbol } = req.query;
+  const { symbol, avgCost, netShares } = req.query;
   if (!symbol) return res.status(400).json({ error: 'symbol required' });
+
+  const userAvgCost  = avgCost  ? parseFloat(avgCost as string)  : null;
+  const userNetShares = netShares ? parseFloat(netShares as string) : null;
 
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'GROQ_API_KEY not set' });
@@ -83,6 +86,14 @@ export default async function handler(req: any, res: any) {
     }
   } catch { /* 新聞抓失敗不影響主流程 */ }
 
+  const portfolioSection = userAvgCost && userNetShares
+    ? `\n我的庫存：\n- 均買價：${userAvgCost.toFixed(2)}\n- 持有股數：${userNetShares}\n- 目前損益：${((price - userAvgCost) / userAvgCost * 100).toFixed(2)}%`
+    : '';
+
+  const stopLossInstruction = userAvgCost
+    ? `【脫離價格】根據我的均買價 ${userAvgCost.toFixed(2)} 與技術面支撐，給出具體建議停損價位（若目前虧損，需考量是否繼續持有或盡快出場）`
+    : `【脫離價格】根據技術面支撐，給出具體建議停損價位`;
+
   const prompt = `你是專業股票技術分析師，根據以下技術數據與近期新聞給出操作建議，請用繁體中文回答。
 
 股票：${m.shortName ?? symbol}（${symbol}）
@@ -90,7 +101,7 @@ export default async function handler(req: any, res: any) {
 今日漲跌：${change >= 0 ? '+' : ''}${change.toFixed(2)}（${changePct.toFixed(2)}%）
 52週最高：${(m.fiftyTwoWeekHigh ?? 0).toFixed(2)}
 52週最低：${(m.fiftyTwoWeekLow ?? 0).toFixed(2)}
-
+${portfolioSection}
 技術指標：
 - MA5：${ma5.toFixed(2)}
 - MA20：${ma20.toFixed(2)}
@@ -109,7 +120,7 @@ ${newsStr}
 【理由】2-3句說明主要原因（可結合新聞與技術面）
 【風險提示】1句提醒主要風險
 【短期目標價】給出合理目標價區間
-【脫離價格】跌破此價位應停損離場（給出具體價格）`;
+${stopLossInstruction}`;
 
   const groqRes = await fetch(
     'https://api.groq.com/openai/v1/chat/completions',

@@ -533,7 +533,7 @@ export default function App() {
               {aiText && (
                 <View style={s.aiCard}>
                   <Text style={s.aiCardTitle}>✨ AI 智能分析</Text>
-                  <Text style={s.aiCardSub}>由 Gemini 根據技術指標生成，僅供參考</Text>
+                  <Text style={s.aiCardSub}>由 AI 根據技術指標生成，僅供參考</Text>
                   <View style={s.aiDivider} />
                   {aiText.split('\n').filter(l => l.trim()).map((line, i) => {
                     const isHeader = line.startsWith('【');

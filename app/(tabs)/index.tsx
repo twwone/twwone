@@ -296,6 +296,12 @@ export default function App() {
   const [aiLoading,     setAiLoading]     = useState(false);
   const [aiError,       setAiError]       = useState<string | null>(null);
 
+  // 到價通知
+  const [alertPrice,     setAlertPrice]     = useState('');
+  const [alertDirection, setAlertDirection] = useState<'above' | 'below'>('above');
+  const [alertList,      setAlertList]      = useState<{ id: string; targetPrice: number; direction: 'above' | 'below' }[]>([]);
+  const [alertSaving,    setAlertSaving]    = useState(false);
+
   const watchSymbolsRef = useRef<string[]>([]);
   useEffect(() => { watchSymbolsRef.current = watchSymbols; }, [watchSymbols]);
 
@@ -306,6 +312,15 @@ export default function App() {
     : 'neutral';
   const sig    = SIGNAL_CONFIG[signal];
   const score  = hasIndicators ? [searchResult!.condA, searchResult!.condB, searchResult!.condC].filter(Boolean).length : 0;
+
+  // 開啟股票 Modal 時載入該股的到價通知
+  useEffect(() => {
+    if (!selectedStock) { setAlertList([]); setAlertPrice(''); return; }
+    fetch(`/api/price-alerts?symbol=${encodeURIComponent(selectedStock.symbol)}`)
+      .then(r => r.json())
+      .then(data => setAlertList(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, [selectedStock]);
 
   // ── 載入市場 ─────────────────────────────────────────
   const loadMarket = async (forceRefresh = false) => {
@@ -570,6 +585,81 @@ export default function App() {
                 </View>
               )}
             </View>
+
+            {/* 到價通知區塊 */}
+            <View style={s.alertWrap}>
+              <Text style={s.alertTitle}>🔔 到價通知</Text>
+
+              {/* 方向切換 */}
+              <View style={s.alertDirRow}>
+                <TouchableOpacity
+                  style={[s.alertDirBtn, alertDirection === 'above' && s.alertDirActive]}
+                  onPress={() => setAlertDirection('above')}
+                >
+                  <Text style={[s.alertDirTxt, alertDirection === 'above' && s.alertDirActiveTxt]}>突破 ↑</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[s.alertDirBtn, alertDirection === 'below' && s.alertDirActive]}
+                  onPress={() => setAlertDirection('below')}
+                >
+                  <Text style={[s.alertDirTxt, alertDirection === 'below' && s.alertDirActiveTxt]}>跌破 ↓</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* 價格輸入 */}
+              <View style={s.alertInputRow}>
+                <TextInput
+                  style={s.alertInput}
+                  placeholder="輸入價格"
+                  placeholderTextColor="#666"
+                  keyboardType="decimal-pad"
+                  value={alertPrice}
+                  onChangeText={setAlertPrice}
+                />
+                <TouchableOpacity
+                  style={[s.alertSaveBtn, alertSaving && { opacity: 0.5 }]}
+                  disabled={alertSaving || !alertPrice}
+                  onPress={async () => {
+                    if (!selectedStock || !alertPrice) return;
+                    setAlertSaving(true);
+                    try {
+                      const r = await fetch('/api/price-alerts', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          symbol: selectedStock.symbol,
+                          name: selectedStock.name,
+                          targetPrice: parseFloat(alertPrice),
+                          direction: alertDirection,
+                        }),
+                      });
+                      const newAlert = await r.json();
+                      setAlertList(prev => [...prev, newAlert]);
+                      setAlertPrice('');
+                    } catch { /* ignore */ }
+                    setAlertSaving(false);
+                  }}
+                >
+                  <Text style={s.alertSaveTxt}>{alertSaving ? '...' : '設定'}</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* 已設清單 */}
+              {alertList.map(a => (
+                <View key={a.id} style={s.alertItem}>
+                  <Text style={s.alertItemTxt}>
+                    {a.direction === 'above' ? '突破 ↑' : '跌破 ↓'} {a.targetPrice}
+                  </Text>
+                  <TouchableOpacity onPress={async () => {
+                    await fetch(`/api/price-alerts?id=${encodeURIComponent(a.id)}`, { method: 'DELETE' });
+                    setAlertList(prev => prev.filter(x => x.id !== a.id));
+                  }}>
+                    <Text style={s.alertItemDel}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+
           </ScrollView>
         </SafeAreaView>
       </Modal>
@@ -933,4 +1023,20 @@ const s = StyleSheet.create({
   aiLineSub:    { fontSize: 13, color: '#BBB', marginLeft: 4, lineHeight: 20 },
   aiResetBtn:   { marginTop: 8, alignSelf: 'flex-end' },
   aiResetTxt:   { fontSize: 12, color: '#666' },
+
+  // 到價通知
+  alertWrap:        { padding: 16, paddingTop: 0, paddingBottom: 32 },
+  alertTitle:       { fontSize: 15, fontWeight: 'bold', color: '#E8E8FF', marginBottom: 12 },
+  alertDirRow:      { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  alertDirBtn:      { flex: 1, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: '#333', alignItems: 'center' },
+  alertDirActive:   { borderColor: '#BF5AF2', backgroundColor: '#2D1B69' },
+  alertDirTxt:      { color: '#888', fontSize: 14, fontWeight: '600' },
+  alertDirActiveTxt:{ color: '#BF5AF2' },
+  alertInputRow:    { flexDirection: 'row', gap: 8, marginBottom: 12 },
+  alertInput:       { flex: 1, backgroundColor: '#1C1C1E', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10, color: '#FFF', fontSize: 15, borderWidth: 1, borderColor: '#333' },
+  alertSaveBtn:     { backgroundColor: '#BF5AF2', borderRadius: 10, paddingHorizontal: 18, justifyContent: 'center' },
+  alertSaveTxt:     { color: '#FFF', fontWeight: 'bold', fontSize: 14 },
+  alertItem:        { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#1C1C1E', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 6, borderWidth: 1, borderColor: '#2A2A2A' },
+  alertItemTxt:     { color: '#E8E8FF', fontSize: 14 },
+  alertItemDel:     { color: '#666', fontSize: 16, paddingLeft: 12 },
 });

@@ -118,6 +118,7 @@ ${newsStr}
 【操作建議】買進 / 觀望 / 賣出（只選一個）
 【信心程度】高 / 中 / 低
 【理由】2-3句說明主要原因（可結合新聞與技術面）
+【時事解析】逐條說明每則新聞對股價的潛在影響（利多/利空/中性），並解釋為什麼會影響
 【風險提示】1句提醒主要風險
 【短期目標價】給出合理目標價區間
 ${stopLossInstruction}`;
@@ -131,7 +132,7 @@ ${stopLossInstruction}`;
         model: 'llama-3.3-70b-versatile',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.3,
-        max_tokens: 600,
+        max_tokens: 1000,
       }),
     }
   );

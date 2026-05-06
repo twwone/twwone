@@ -2,10 +2,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, FlatList, RefreshControl,
-  SafeAreaView, StyleSheet, Text,
+  ActivityIndicator, Alert, FlatList, Modal, RefreshControl,
+  SafeAreaView, ScrollView, StyleSheet, Text,
   TouchableOpacity, View,
 } from 'react-native';
+import KLineChart from '@/components/KLineChart';
 import { getNameMap, resolveName } from '@/lib/stockNames';
 
 const WATCHLIST_KEY = '@watchlist_v1';
@@ -57,15 +58,18 @@ function isUSMarketOpen(): boolean {
 
 // ── 主元件 ─────────────────────────────────────────────────────────
 
+interface SelectedStock { symbol: string; name: string; price: number; }
+
 export default function RadarScreen() {
-  const [market,      setMarket]      = useState<Market>('tw');
-  const [tops,        setTops]        = useState<TopSignalItem[]>([]);
-  const [loading,     setLoading]     = useState(true);
-  const [refreshing,  setRefreshing]  = useState(false);
-  const [updatedAt,   setUpdatedAt]   = useState<number | null>(null);
-  const [nameMap,     setNameMap]     = useState<Record<string, string>>({});
-  const [watchlist,   setWatchlist]   = useState<string[]>([]);
-  const [marketOpen,  setMarketOpen]  = useState(isTWMarketOpen());
+  const [market,        setMarket]        = useState<Market>('tw');
+  const [tops,          setTops]          = useState<TopSignalItem[]>([]);
+  const [loading,       setLoading]       = useState(true);
+  const [refreshing,    setRefreshing]    = useState(false);
+  const [updatedAt,     setUpdatedAt]     = useState<number | null>(null);
+  const [nameMap,       setNameMap]       = useState<Record<string, string>>({});
+  const [watchlist,     setWatchlist]     = useState<string[]>([]);
+  const [marketOpen,    setMarketOpen]    = useState(isTWMarketOpen());
+  const [selectedStock, setSelectedStock] = useState<SelectedStock | null>(null);
 
   const initialized = useRef(false);
 
@@ -165,7 +169,11 @@ export default function RadarScreen() {
     const inWatch     = watchlist.includes(item.symbol);
 
     return (
-      <View style={[s.card, { borderColor: lv.color + '44' }]}>
+      <TouchableOpacity
+        style={[s.card, { borderColor: lv.color + '44' }]}
+        activeOpacity={0.85}
+        onPress={() => setSelectedStock({ symbol: item.symbol, name: displayName, price: item.price })}
+      >
         <View style={s.cardTopRow}>
           <View style={s.rankBadge}>
             <Text style={s.rankText}>#{index + 1}</Text>
@@ -198,14 +206,14 @@ export default function RadarScreen() {
 
         <TouchableOpacity
           style={[s.addBtn, { borderColor: inWatch ? '#2C4F6B' : lv.color + '66' }]}
-          onPress={() => addToWatchlist(item.symbol, displayName)}
+          onPress={(e) => { e.stopPropagation(); addToWatchlist(item.symbol, displayName); }}
           disabled={inWatch}
         >
           <Text style={[s.addBtnText, { color: inWatch ? '#2C4F6B' : lv.color }]}>
             {inWatch ? '✓ 已在自選股' : '＋ 加入自選股'}
           </Text>
         </TouchableOpacity>
-      </View>
+      </TouchableOpacity>
     );
   };
 
@@ -221,6 +229,25 @@ export default function RadarScreen() {
 
   return (
     <SafeAreaView style={s.container}>
+
+      {/* K 線 Modal */}
+      <Modal visible={!!selectedStock} animationType="slide" onRequestClose={() => setSelectedStock(null)}>
+        <SafeAreaView style={s.modalWrap}>
+          <ScrollView>
+            <View style={s.modalHeader}>
+              <TouchableOpacity style={s.modalClose} onPress={() => setSelectedStock(null)}>
+                <Text style={s.modalCloseTxt}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={s.modalMeta}>
+              <Text style={s.modalName}>{selectedStock?.name}</Text>
+              <Text style={s.modalSymbol}>{selectedStock?.symbol}</Text>
+              <Text style={s.modalPrice}>{selectedStock?.price.toLocaleString()}</Text>
+            </View>
+            {selectedStock && <KLineChart symbol={selectedStock.symbol} />}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
       <View style={s.header}>
         <Text style={s.headerTitle}>強勢雷達</Text>
 
@@ -345,4 +372,13 @@ const s = StyleSheet.create({
 
   addBtn:     { borderWidth: 1, borderRadius: 10, paddingVertical: 8, alignItems: 'center' },
   addBtnText: { fontSize: 13, fontWeight: '700' },
+
+  modalWrap:     { flex: 1, backgroundColor: '#000' },
+  modalHeader:   { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 4 },
+  modalClose:    { width: 32, height: 32, borderRadius: 16, backgroundColor: '#2C2C2E', justifyContent: 'center', alignItems: 'center' },
+  modalCloseTxt: { fontSize: 15, color: '#FFF', fontWeight: 'bold' },
+  modalMeta:     { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 16 },
+  modalName:     { fontSize: 28, fontWeight: 'bold', color: '#FFF' },
+  modalSymbol:   { fontSize: 14, color: '#888', marginTop: 2 },
+  modalPrice:    { fontSize: 22, fontWeight: '600', color: '#FFF', marginTop: 6 },
 });

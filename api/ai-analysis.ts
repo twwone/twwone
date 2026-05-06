@@ -27,8 +27,8 @@ export default async function handler(req: any, res: any) {
   const { symbol } = req.query;
   if (!symbol) return res.status(400).json({ error: 'symbol required' });
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not set' });
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'GROQ_API_KEY not set' });
 
   // 抓 3 個月日 K 資料
   const yfRes = await fetch(`${YF}/${encodeURIComponent(symbol)}?interval=1d&range=3mo`, {
@@ -91,24 +91,26 @@ export default async function handler(req: any, res: any) {
 【風險提示】1句提醒主要風險
 【短期目標價】給出合理目標價區間`;
 
-  const geminiRes = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+  const groqRes = await fetch(
+    'https://api.groq.com/openai/v1/chat/completions',
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.3, maxOutputTokens: 400 },
+        model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.3,
+        max_tokens: 400,
       }),
     }
   );
 
-  if (!geminiRes.ok) {
-    const errBody = await geminiRes.text();
-    return res.status(502).json({ error: 'Gemini API error', status: geminiRes.status, detail: errBody.slice(0, 300) });
+  if (!groqRes.ok) {
+    const errBody = await groqRes.text();
+    return res.status(502).json({ error: 'Groq API error', status: groqRes.status, detail: errBody.slice(0, 300) });
   }
-  const gj   = await geminiRes.json();
-  const text = gj.candidates?.[0]?.content?.parts?.[0]?.text ?? '分析失敗，請稍後再試';
+  const gj   = await groqRes.json();
+  const text = gj.choices?.[0]?.message?.content ?? '分析失敗，請稍後再試';
 
   res.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=60');
   res.json({ analysis: text, symbol, name: m.shortName ?? symbol, price });

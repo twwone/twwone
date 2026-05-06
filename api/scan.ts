@@ -177,9 +177,9 @@ async function runFastScan(settings: Settings, twAboveMA20 = true): Promise<stri
     const entrySignals = signals.filter(s => s.category === 'entry');
     const exitSignals  = signals.filter(s => s.category === 'exit');
 
-    // 買進：KD 低檔黃金交叉（主）+ 帶量突破 或 RSI 超賣反彈（確認）+ MA20 上方
+    // 買進：KD 低檔黃金交叉（主）+ RSI 超賣反彈（確認）+ MA20 上方
     const hasKDEntry      = entrySignals.some(s => s.type === 'kdGoldenCross');
-    const hasConfirmEntry = entrySignals.some(s => s.type === 'volumeBreak' || s.type === 'rsiOversold');
+    const hasConfirmEntry = entrySignals.some(s => s.type === 'rsiOversold');
 
     if (twAboveMA20 && hasKDEntry && hasConfirmEntry && aboveMA20) {
       const coolKey = `direct:buy:${symbol}`;
@@ -329,7 +329,6 @@ const FULL_CONFIG: SignalConfig = {
   rsiOversold:     { enabled: true, threshold: 30 },
   maGoldenCross:   { enabled: true, shortPeriod: 5, longPeriod: 20 },
   bollingerBounce: { enabled: true, stdDev: 2 },
-  volumeBreak:     { enabled: true, volumeMultiplier: 1.5, breakDays: 5 },
   macdAboveZero:   { enabled: true },
   volumePullback:  { enabled: true, maTolerance: 0.015 },
   kdDeathCross:    { enabled: false, overboughtThreshold: 80 },

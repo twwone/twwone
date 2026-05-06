@@ -5,7 +5,6 @@ export interface SignalConfig {
   rsiOversold:     { enabled: boolean; threshold: number };
   maGoldenCross:   { enabled: boolean; shortPeriod: number; longPeriod: number };
   bollingerBounce: { enabled: boolean; stdDev: number };
-  volumeBreak:     { enabled: boolean; volumeMultiplier: number; breakDays: number };
   macdAboveZero:   { enabled: boolean };
   volumePullback:  { enabled: boolean; maTolerance: number };
   // 離場
@@ -17,7 +16,7 @@ export interface SignalConfig {
 }
 
 export const ENTRY_SIGNAL_KEYS: (keyof SignalConfig)[] = [
-  'kdGoldenCross', 'rsiOversold', 'maGoldenCross', 'bollingerBounce', 'volumeBreak', 'macdAboveZero', 'volumePullback',
+  'kdGoldenCross', 'rsiOversold', 'maGoldenCross', 'bollingerBounce', 'macdAboveZero', 'volumePullback',
 ];
 export const EXIT_SIGNAL_KEYS: (keyof SignalConfig)[] = [
   'kdDeathCross', 'rsiOverbought', 'maDeathCross', 'bollingerUpper', 'macdBelowZero',
@@ -28,7 +27,6 @@ export const DEFAULT_SIGNAL_CONFIG: SignalConfig = {
   rsiOversold:     { enabled: true,  threshold: 30 },
   maGoldenCross:   { enabled: false, shortPeriod: 5, longPeriod: 20 },
   bollingerBounce: { enabled: false, stdDev: 2 },
-  volumeBreak:     { enabled: false, volumeMultiplier: 1.5, breakDays: 5 },
   macdAboveZero:   { enabled: false },
   volumePullback:  { enabled: false, maTolerance: 0.015 },
   kdDeathCross:    { enabled: false, overboughtThreshold: 80 },
@@ -174,20 +172,7 @@ export function detectSignals(
     }
   }
 
-  // 5. 帶量突破
-  if (config.volumeBreak.enabled && volumes.length >= config.volumeBreak.breakDays + 1) {
-    const { volumeMultiplier: vm, breakDays: bd } = config.volumeBreak;
-    const todayVol = volumes[volumes.length - 1];
-    const prevVols = volumes.slice(-bd - 1, -1);
-    const vma      = prevVols.reduce((a, b) => a + b, 0) / prevVols.length;
-    const prevHigh = Math.max(...closes.slice(-bd - 1, -1));
-    if (todayVol > vma * vm && closes[closes.length - 1] > prevHigh) {
-      out.push({ category: 'entry', type: 'volumeBreak', label: '帶量突破',
-        detail: `量 ${(todayVol / 1000).toFixed(0)}張 > 均量 ${(vma / 1000).toFixed(0)}張，突破${bd}日高` });
-    }
-  }
-
-  // 6. MACD 零軸上方黃金交叉
+  // 5. MACD 零軸上方黃金交叉
   if (config.macdAboveZero.enabled) {
     const { histogram, macd } = calcMACD(closes);
     if (histogram.length >= 2) {

@@ -1,7 +1,7 @@
 export const maxDuration = 90;
 
 import Redis from 'ioredis';
-import { calcMA, detectSignals, SignalConfig, DEFAULT_SIGNAL_CONFIG } from '../lib/signals';
+import { calcMA, calcMACD, detectSignals, SignalConfig, DEFAULT_SIGNAL_CONFIG } from '../lib/signals';
 
 const redis = new Redis(process.env.REDIS_URL!, { lazyConnect: true, maxRetriesPerRequest: 2 });
 
@@ -323,37 +323,85 @@ async function runFastScan(settings: Settings, twAboveMA20 = true): Promise<stri
 
 // ── Mode: full ─────────────────────────────────────────────────────
 
-const FULL_CONFIG: SignalConfig = {
-  ...DEFAULT_SIGNAL_CONFIG,
-  kdGoldenCross:   { enabled: true, oversoldThreshold: 20 },
-  rsiOversold:     { enabled: true, threshold: 30 },
-  maGoldenCross:   { enabled: true, shortPeriod: 5, longPeriod: 20 },
-  bollingerBounce: { enabled: true, stdDev: 2 },
-  macdAboveZero:   { enabled: true },
-  volumePullback:  { enabled: true, maTolerance: 0.015 },
-  kdDeathCross:    { enabled: false, overboughtThreshold: 80 },
-  rsiOverbought:   { enabled: false, threshold: 70 },
-  maDeathCross:    { enabled: false, shortPeriod: 5, longPeriod: 20 },
-  bollingerUpper:  { enabled: false, stdDev: 2 },
-  macdBelowZero:   { enabled: false },
-};
+// ── 強勢雷達計分函數 ────────────────────────────────────────────────
+// 策略：小本金・只做多頭趨勢・尋找量縮回踩 MA10 的精準買點
+// 架構：漏斗型 — 先硬性濾網（門票）→ 再計加分項目
+//
+// 分數參考：
+//   100 = 只觸發核心條件
+//   120 = 核心 + MA 黃金交叉
+//   110 = 核心 + MACD 上穿
+//   130 = 三條件全中（最強訊號）
 
-function scoreStock(data: StockData): { score: number; signalLabels: string[] } {
-  const signals      = detectSignals(data.closes, data.volumes, data.highs, data.lows, FULL_CONFIG);
-  const entrySignals = signals.filter(s => s.category === 'entry');
+// 5日均量底限（2000張；Yahoo Finance 單位為股，1張 = 1000股）
+const RADAR_MIN_AVG_VOL = 2_000_000;
+// 量縮回踩 MA10 最大偏差容忍度（1.5%）
+const RADAR_MA10_TOL    = 0.015;
 
-  const ma5  = calcMA(data.closes, 5);
-  const ma20 = calcMA(data.closes, 20);
+function calculateRadarScore(data: StockData): { score: number; signalLabels: string[] } {
+  const { closes, volumes } = data;
 
-  if (data.price <= ma20) return { score: 0, signalLabels: [] };
-  if (entrySignals.length === 0) return { score: 0, signalLabels: [] };
+  // 資料長度不足（MACD 需要 26+9 = 35 根以上才穩定）
+  if (closes.length < 35 || volumes.length < 6) return { score: 0, signalLabels: [] };
 
-  const bullish = data.price > ma5 && ma5 > ma20;
+  const price = data.price;
+  const ma5   = calcMA(closes, 5);
+  const ma10  = calcMA(closes, 10);
+  const ma20  = calcMA(closes, 20);
 
-  return {
-    score:        entrySignals.length * 30 + (bullish ? 15 : 0),
-    signalLabels: entrySignals.map(s => s.label),
-  };
+  // ── 硬性濾網 ①：完整多頭排列（三層確認，缺一不可）────────────────
+  // 比舊版「Price > MA20」更嚴格：均線本身也必須向上發散
+  if (!(price > ma20 && ma5 > ma10 && ma10 > ma20)) return { score: 0, signalLabels: [] };
+
+  // ── 硬性濾網 ②：流動性底限（5日均量 >= 2000張）────────────────────
+  // 取前 5 根（不含今日）以避免今日量縮誤殺流動性評估
+  const avgVol5 = volumes.slice(-6, -1).reduce((a, b) => a + b, 0) / 5;
+  if (avgVol5 < RADAR_MIN_AVG_VOL) return { score: 0, signalLabels: [] };
+
+  // ── 加分計算 ─────────────────────────────────────────────────────────
+  let score = 0;
+  const signalLabels: string[] = [];
+
+  // 【+100 核心狙擊條件】量縮回踩 MA10
+  // 兩個子條件同時成立才算：
+  //   1. 股價與 MA10 偏差絕對值 <= 1.5%（已在多頭排列近均線）
+  //   2. 今日成交量 < 5日均量（量縮代表空方無力，非強制出貨）
+  const todayVol  = volumes[volumes.length - 1];
+  const nearMA10  = ma10 > 0 && Math.abs(price - ma10) / ma10 <= RADAR_MA10_TOL;
+  const volShrink = todayVol < avgVol5;
+  if (nearMA10 && volShrink) {
+    score += 100;
+    signalLabels.push('量縮回踩MA10');
+  }
+
+  // 【+20 輔助動能確認】MA5 剛上穿 MA20 黃金交叉
+  // 必須是「今日才發生的交叉」，排除早已成立的多頭走勢
+  if (closes.length > 21) {
+    const prev    = closes.slice(0, -1);
+    const prevMa5 = calcMA(prev, 5);
+    const prevMa20 = calcMA(prev, 20);
+    if (prevMa5 <= prevMa20 && ma5 > ma20) {
+      score += 20;
+      signalLabels.push('MA黃金交叉');
+    }
+  }
+
+  // 【+10 輔助動能確認】MACD 零軸以上，柱狀體由負翻正
+  // 代表短線動能從遲緩轉為加速，且位於零軸上方確認多頭格局
+  const { histogram, macd: macdLine } = calcMACD(closes);
+  if (histogram.length >= 2) {
+    const hPrev = histogram[histogram.length - 2];
+    const hCurr = histogram[histogram.length - 1];
+    const mCurr = macdLine[macdLine.length - 1];
+    if (hPrev <= 0 && hCurr > 0 && mCurr > 0) {
+      score += 10;
+      signalLabels.push('MACD零軸上交叉');
+    }
+  }
+
+  // 沒有任何加分項目觸發 → 通過濾網但無精準買點，不列入推薦
+  if (score === 0) return { score: 0, signalLabels: [] };
+  return { score, signalLabels };
 }
 
 interface MarketCandidate { code: string; name: string; volume: number; }
@@ -411,7 +459,7 @@ async function runFullScan(): Promise<{ poolSize: number; stored: number; top: T
       chunk.map(async ({ code, name }) => {
         const data = await fetchStockData(`${code}.TW`);
         if (!data) return null;
-        const { score, signalLabels } = scoreStock(data);
+        const { score, signalLabels } = calculateRadarScore(data);
         if (score === 0) return null;
         return {
           symbol:    `${code}.TW`,
@@ -449,7 +497,7 @@ async function runFullScanUS(): Promise<{ poolSize: number; stored: number; top:
       chunk.map(async (code) => {
         const data = await fetchStockData(code);
         if (!data) return null;
-        const { score, signalLabels } = scoreStock(data);
+        const { score, signalLabels } = calculateRadarScore(data);
         if (score === 0) return null;
         return {
           symbol:    code,

@@ -23,8 +23,8 @@ const PERIODS = [
 
 const MA_CFGS = [
   { period: 5,  color: '#FFD60A' },
-  { period: 20, color: '#32D4F5' },
-  { period: 60, color: '#BF5AF2' },
+  { period: 10, color: '#32D4F5' },
+  { period: 20, color: '#BF5AF2' },
 ];
 
 const CHART_H = 220;
@@ -222,7 +222,7 @@ export default function KLineChart({ symbol }: { symbol: string }) {
             <Text style={s.infoItem}>收 <Text style={s.infoV}>{fmtP(crossPt.close)}</Text></Text>
           </>
         ) : (
-          <Text style={s.infoHint}>MA5  MA20  MA60</Text>
+          <Text style={s.infoHint}>MA5  MA10  MA20</Text>
         )}
       </View>
 

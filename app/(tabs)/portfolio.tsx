@@ -146,6 +146,7 @@ export default function PortfolioScreen() {
   const [showModal, setShowModal] = useState(false);
   const [adding,         setAdding]         = useState(false);
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
+  const [deletingId,     setDeletingId]     = useState<string | null>(null);
 
   const [fSymbol,  setFSymbol]  = useState('');
   const [fType,    setFType]    = useState<'buy' | 'sell'>('buy');
@@ -231,18 +232,14 @@ export default function PortfolioScreen() {
     resetForm();
   };
 
-  const removeHolding = (id: string) => {
-    Alert.alert('刪除紀錄', '確定要刪除這筆紀錄？', [
-      { text: '取消', style: 'cancel' },
-      { text: '刪除', style: 'destructive', onPress: async () => {
-        const next = holdings.filter(h => h.id !== id);
-        setHoldings(next);
-        await saveHoldings(next);
-        if (selectedSymbol && !next.some(h => h.symbol === selectedSymbol)) {
-          setSelectedSymbol(null);
-        }
-      }},
-    ]);
+  const confirmDelete = async (id: string) => {
+    const next = holdings.filter(h => h.id !== id);
+    setHoldings(next);
+    setDeletingId(null);
+    await saveHoldings(next);
+    if (selectedSymbol && !next.some(h => h.symbol === selectedSymbol)) {
+      setSelectedSymbol(null);
+    }
   };
 
   // 加入即時價格（賣出紀錄 pnl 先給 0，在 grouped 裡重新算）
@@ -441,7 +438,7 @@ export default function PortfolioScreen() {
       }
 
       {/* ── 交易明細 Modal ── */}
-      <Modal visible={selectedSymbol !== null} animationType="slide" transparent onRequestClose={() => setSelectedSymbol(null)}>
+      <Modal visible={selectedSymbol !== null} animationType="slide" transparent onRequestClose={() => { setSelectedSymbol(null); setDeletingId(null); }}>
         <View style={s.overlay}>
           <View style={[s.modalBox, { paddingBottom: 32 }]}>
             {selectedGroup && (
@@ -453,7 +450,7 @@ export default function PortfolioScreen() {
                       {selectedGroup.symbol.replace('.TW', '')}　·　{selectedGroup.quantitySummary}
                     </Text>
                   </View>
-                  <TouchableOpacity onPress={() => setSelectedSymbol(null)}>
+                  <TouchableOpacity onPress={() => { setSelectedSymbol(null); setDeletingId(null); }}>
                     <Text style={s.modalClose}>✕</Text>
                   </TouchableOpacity>
                 </View>
@@ -511,9 +508,20 @@ export default function PortfolioScreen() {
                               {sign(tx.pnl)}{Math.round(tx.pnl).toLocaleString()}
                             </Text>
                           )}
-                          <TouchableOpacity onPress={() => removeHolding(tx.id)}>
-                            <Text style={s.deleteBtn}>刪除</Text>
-                          </TouchableOpacity>
+                          {deletingId === tx.id ? (
+                            <View style={{ flexDirection: 'row', gap: 8 }}>
+                              <TouchableOpacity onPress={() => confirmDelete(tx.id)}>
+                                <Text style={[s.deleteBtn, { color: '#E74C3C' }]}>確認</Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity onPress={() => setDeletingId(null)}>
+                                <Text style={[s.deleteBtn, { color: '#999' }]}>取消</Text>
+                              </TouchableOpacity>
+                            </View>
+                          ) : (
+                            <TouchableOpacity onPress={() => setDeletingId(tx.id)}>
+                              <Text style={s.deleteBtn}>刪除</Text>
+                            </TouchableOpacity>
+                          )}
                         </View>
                       </View>
                     );
